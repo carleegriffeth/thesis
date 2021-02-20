@@ -1,0 +1,190 @@
+---
+title: "R1_Station_DescriptiveStats"
+author: "Carlee Griffeth"
+date: "2/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setting Up
+
+## Loading Libraries
+
+```{r load libraries, message=FALSE}
+library(tidyverse)
+library(tidycensus)
+library(purrr)
+library(survey)
+library(srvyr)
+library(knitr)
+library(jtools)
+library(sf)
+library(sp)
+library(units)
+library(nngeo)
+library(leaflet)
+library(tigris)
+library(reshape2)
+library(httr)
+library(jsonlite)
+
+census_api_key("84fd7c10ce8fd8c15d8852fd68abaa8790f1c29d")
+options(tigris_use_cache = TRUE)
+```
+
+# Loading Data
+
+## EVCS Dataset
+
+Electric vehicle charging station data is pulled from the US Department of Energy Alternative Fuels Data Center's Alternative Fueling Station Locator at https://afdc.energy.gov/stations/#/analyze?country=US&fuel=ELEC&ev_levels=all&access=public&access=private
+
+Filtered by:
+1. Location: United States -- all states/territories
+2. Fuel: Electric -- all charger types, all connectors, all networks selected
+3. Station: 
+    - public and private access; 
+    - status: available; 
+    - owner: all; 
+    - payment: all
+
+Manually downaloaded and read into r.
+
+```{r loading datasets}
+evcs <- read_csv("Station_Data/evcs.csv") %>%
+                  select(Station_Name, Street_Address, City, State, ZIP, 
+                         Access_Days_Time, EV_Network, Latitude, Longitude, 
+                         Owner_Type_Code, Access_Code, EV_Pricing) %>%
+                  mutate(access_time = case_when(Access_Days_Time == "24 hours daily" ~ "24 hours daily",
+                                            Access_Days_Time == "24 hours" ~ "24 hours",
+                                            Access_Days_Time == "MON: 24 hours | TUE: 24 hours | WED: 24 hours | THU: 24 hours | FRI: 24 hours | SAT: 24 hours | SUN: 24 hours" ~ "SMTWTFS 24 Hours", 
+                                            TRUE ~ "Other")) %>%
+                  mutate(network = case_when(EV_Network == "AMPUP" ~ "AMPUP",
+                                             EV_Network == "Blink Network" ~ "Blink Network",
+                                             EV_Network == "CHARGELAB" ~ "CHARGELAB",
+                                             EV_Network == "ChargePoint Network" ~ "ChargePoint Network",
+                                             EV_Network == "Electrify America" ~ "Electrify America",
+                                             EV_Network == "EV Connect" ~ "EV Connect",
+                                             EV_Network == "EVCS" ~ "EVCS",
+                                             EV_Network == "EVGATEWAY" ~ "EVGATEWAY",
+                                             EV_Network == "eVgo Network" ~ "eVgo Network",
+                                             EV_Network == "FCN" ~ "FCN",
+                                             EV_Network == "FLO" ~ "FLO",
+                                             EV_Network == "FPLEV" ~ "FPLEV",
+                                             EV_Network == "Greenlots" ~ "Greenlots",
+                                             EV_Network == "Non-Networked" ~ "Non-Networked",
+                                             EV_Network == "OpConnect" ~ "OpConnect",
+                                             EV_Network == "POWERFLEX" ~ "POWERFLEX",
+                                             EV_Network == "Tesla" ~ "Tesla",
+                                             EV_Network == "Tesla Destination" ~ "Tesla Destination",
+                                             EV_Network == "Volta" ~ "Volta",
+                                             EV_Network == "Webasto" ~ "Webasto",
+                                             TRUE ~ "Other",
+                                             FALSE ~ "None")) %>%
+                  mutate(ownership = case_when(Owner_Type_Code == "FG" ~ "Federal Government",
+                                               Owner_Type_Code == "J" ~ "Joint",
+                                               Owner_Type_Code == "LG" ~ "Local Government",
+                                               Owner_Type_Code == "P" ~ "Private",
+                                               Owner_Type_Code == "SG" ~ "State Government",
+                                               Owner_Type_Code == "T" ~ "Utility",
+                                               TRUE ~ "Blank",
+                                               FALSE ~ "None")) %>%
+                  mutate(access_type = case_when(Access_Code == "public" ~ "Public Accessiblity",
+                                               Access_Code == "private" ~ "Private Accessibility",
+                                               TRUE ~ "Blank",
+                                               FALSE ~ "None")) %>%
+select(Station_Name, Street_Address, City, State, ZIP, access_time, network, Latitude, Longitude, ownership, access_type, EV_Pricing)
+```
+
+https://developer.nrel.gov/docs/transportation/alt-fuel-stations-v1/all/
+API key: I4UmOSaecDnNMUyzkbz0fi3I27B38pdVibkteVXf
+
+```{r}
+res = GET("https://developer.nrel.gov/api/alt-fuel-stations/v1.json?limit=1&api_key=I4UmOSaecDnNMUyzkbz0fi3I27B38pdVibkteVXf")
+```
+
+## Census Data
+
+Loading the list of ACS variables just to have on hand for reference. 
+
+```{r }
+v17 <- load_variables(2017, "acs5", cache = TRUE)
+```
+
+Pulling All Tracts
+
+Defining variable "us" to mean all census tracts in the US -- for the purpose of sociodemographic data. 
+Defining varialbe "us_shape" to mean all census tracts in the US -- for the purpose of spatial data. 
+
+NOTE: 'ALAND' variable in "us_shape" is in square meters. 
+
+```{r}
+us <- unique(fips_codes$state)[1:51]
+
+us_shape <- map_df(us, function(x) {
+                  tracts(state = x, cb = FALSE, year = 2017)})
+```
+
+### Selecting Variables 
+
+Defining density variable.
+
+  B01003_001 = total population
+  B25001_001 = total housing units
+  B25003_001 = total occupied housing units
+  B25003_002 = total owner occupied housing units
+  B25003_003 = total renter  occupied housing units
+ 
+    White, Non-Hispanic
+  B02001_002 = White alone
+  B03002_003 = Not Hispanic or Latino!!White alone
+  
+    Black, Non-Hispanic
+  B02001_003 = Black or African American alone
+  B03002_004 = Not Hispanic or Latino!!Black or African American alone
+ 
+    Indigenous, Non-Hispanic
+  B02001_004 = American Indian and Alaska Native alone
+  B03002_005 = Not Hispanic or Latino!!American Indian and Alaska Native alone
+ 
+    Asian, Non-Hispanic
+  B02001_005 = Asian alone
+  B03002_006 = Not Hispanic or Latino!!Asian alone
+  
+    Native Pacific Islander, Non-Hispanic
+  B02001_006 = Native Hawaiian and Other Pacific Islander alone
+  B03002_007 = Not Hispanic or Latino!!Native Hawaiian and Other Pacific Islander alone
+  
+  B03002_012 = Hispanic or Latino
+  
+  B08301_001 = Means to work: Total
+  B08301_003 = Means to work: Car truck or van!!Drove alone
+  B08301_010 = Means to work: Public transportation (excluding taxicab)
+  B08301_021 = Worked at home
+  
+  B19013_001 = Median household income in the past 12 months (in 2017 inflation-adjusted dollars)
+
+
+```{r selecting census variables}
+
+acs_data <- map_df(us, function(x) {
+                  get_acs(geography ="tract",
+                          geometry = TRUE,
+                          variables = c("B01003_001", "B25001_001", "B25003_001", "B25003_002", 
+                                        "B25003_003", "B03002_003", "B03002_004",  "B03002_005",
+                                        "B03002_006",  "B03002_007", "B03002_012", "B08301_001", 
+                                        "B08301_003", "B08301_010", "B08301_021", "B19013_001"),
+                          output = "wide",
+                          state = x,
+                          year = 2017)})
+
+colnames(acs_data) <- c("GEOID", "NAME", "Tot_Pop", "Tot_Pop_MOE", "Tot_HU", "Tot_HU_MOE", "Tot_HU_Occ", "Tot_HU_Occ_MOE",
+                        "Tot_HU_OwnOcc", "Tot_HU_OwnOcc_MOE", "Tot_HU_RentOcc", "Tot_HU_RentOcc_MOE", "Race_WhiteNH", "Race_WhiteNH_MOE",
+                        "Race_BlackNH", "Race_BlackNH_MOE", "Race_IndigenousNH", "Race_IndigenousNH_MOE", "Race_AsianNH", "Race_AsianNH_MOE", 
+                        "Race_PacIslNH", "Race_PacIslNH_MOE", "Race_Hispanic", "Race_Hispanic_MOE", "Mode_Total", "Mode_Total_MOE", 
+                        "Mode_CarAlone", "Mode_CarAlone_MOE", "Mode_PubTransit", "Mode_PubTransit_MOE", "Mode_WFH", "Mode_WFH_MOE", 
+                        "MedInc", "MedInc_MOE", "Geometry")
+```
+

@@ -1,0 +1,181 @@
+---
+title: "R1_Household_Regression"
+author: "Carlee Griffeth"
+date: "2/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r load libraries, message=FALSE}
+library(tidyverse)
+library(survey)
+library(srvyr)
+library(treemapify)
+library(knitr)
+library(jtools)
+library(interactions)
+```
+
+# Loading NHTS Data
+
+## Household file
+
+```{r load hh data, message=FALSE}
+hhs <- read_csv("NHTS_data/hhpub.csv") %>%
+  select(HOUSEID, HHVEHCNT, HHFAMINC, HHSIZE, NUMADLT, WRKCOUNT, DRVRCNT, YOUNGCHILD, HOMEOWN, HBHUR, WTHHFIN) %>%
+  mutate(income_k = case_when(HHFAMINC == "01" ~ 5,
+                              HHFAMINC == "02" ~ 12.5,
+                              HHFAMINC == "03" ~ 20,
+                              HHFAMINC == "04" ~ 30,
+                              HHFAMINC == "05" ~ 42.5,
+                              HHFAMINC == "06" ~ 62.5,
+                              HHFAMINC == "07" ~ 87.5,
+                              HHFAMINC == "08" ~ 112.5,
+                              HHFAMINC == "09" ~ 137.5,
+                              HHFAMINC == "10" ~ 175,
+                              HHFAMINC == "11" ~ 250,
+                              TRUE ~ -1)) %>%
+  mutate(has_veh = HHVEHCNT > 0) %>%
+  mutate(homeown = case_when(HOMEOWN == "01" ~ "Own",
+                                   HOMEOWN == "02" ~ "Rent",
+                                   TRUE ~ "zOther"))%>%
+  mutate(hhdensity = case_when(HBHUR == "C" ~ "Second City",
+                                     HBHUR == "R" ~ "Rural",
+                                     HBHUR == "S" ~ "Suburban",
+                                     HBHUR == "T" ~ "Small Town",
+                                     HBHUR == "U" ~ "Urban",
+                                     TRUE ~ "zOther"))%>%
+  mutate(has_kid = YOUNGCHILD > 0) %>%
+  mutate(has_kids = YOUNGCHILD > 1) %>%
+  select(HOUSEID, has_veh, income_k, hhdensity, homeown, HHSIZE, NUMADLT, WRKCOUNT, DRVRCNT, has_kid, has_kids, WTHHFIN) %>%
+  filter(has_veh)
+```
+
+## Vehicle File
+
+```{r load vehicle data, message=FALSE}
+vehs <- read_csv("NHTS_data/vehpub.csv") %>%
+  select(HOUSEID, HFUEL) %>%
+  mutate(is_ev = (HFUEL == "03")) %>%
+  group_by(HOUSEID) %>%
+  summarize(has_ev = max(is_ev))
+
+hhs <- hhs %>%
+  left_join(vehs)
+```
+
+## Person File 
+
+```{r load person data, message=FALSE}
+ppl <- read_csv("NHTS_data/perpub.csv") %>%
+  select(HOUSEID, R_RACE, R_HISP, WRKTRANS, NOCONG) %>%
+  mutate(is_nh_white = (R_RACE == "01" & R_HISP == "02")) %>%
+  group_by(HOUSEID)
+
+drive_ppl <- ppl %>%
+  filter(NOCONG > 0) %>%
+  summarize(avg_commute = mean(NOCONG))
+
+ppl <- ppl %>%
+  summarize(has_BIPOC = !as.logical(min(is_nh_white))) %>%
+  left_join(drive_ppl) %>%
+  mutate(avg_commute = replace_na(avg_commute, 0))
+
+hhs <- hhs %>%
+  left_join(ppl)
+```
+
+# Regression
+
+```{r three-IV regression}
+model1 <- glm(has_ev ~ income_k + has_BIPOC + avg_commute + has_kids + homeown + hhdensity, 
+              data = hhs, family = "binomial")
+
+summary(model1)
+```
+## Log Income
+
+```{r three-IV regression}
+model2 <- glm(has_ev ~ log(income_k) + has_BIPOC + avg_commute + has_kids + homeown + hhdensity, 
+              data = hhs, family = "binomial")
+
+summary(model2)
+```
+
+## Regression with Interactions
+
+```{r interaction regression}
+model3 <- glm(has_ev ~ log(income_k) + has_BIPOC + avg_commute + has_kids + homeown + hhdensity +
+                has_BIPOC:has_kids +
+                log(income_k):has_kids +
+                log(income_k):has_BIPOC, 
+              data = hhs, family = "binomial")
+
+summary(model3)
+```
+
+## Result Table
+
+```{r results summary}
+coef_names <- c("Income (log-transformed)" = "log(income_k)", 
+                "Presence of BIPOC in household" = "has_BIPOCTRUE",
+                "Average driving commute" = "avg_commute",
+                "Presence of 2+ children (aged 0-4)" = "has_kidsTRUE",
+                "Renters" = "homeownRent",
+                "Homeownership - Other" = "homeownzOther",
+                "Second City" = "hhdensitySecond City",
+                "Small Town" = "hhdensitySmall Town",
+                "Suburban" = "hhdensitySuburban",
+                "Urban" = "hhdensityUrban",
+                "Density - Other" = "hhdensityzOther",
+                "Interaction: BIPOC and children" = "has_BIPOCTRUE:has_kidsTRUE",
+                "Interaction: income and children" = "log(income_k):has_kidsTRUE",
+                "Interaction: income and BIPOC" = "log(income_k):has_BIPOCTRUE",
+                "Constant" = "(Intercept)")
+
+export_summs(model1, model2, model3, coefs = coef_names)
+```
+
+``` {r interaction figure, message=FALSE, warning=FALSE}
+interact_plot(model3, pred = "income_k", modx = "has_BIPOC", interval = TRUE) +
+  scale_y_continuous(name = "Probability of owning an electric vehicle",
+                     breaks = breaks <- seq(0, 0.04, by = 0.005),
+                     labels = paste(breaks * 100, "%", sep = "")) +
+  scale_x_continuous(name = "Household income",
+                     breaks= breaks <- seq(0, 250, by = 50),
+                     labels = paste("$", prettyNum(breaks*1000, big.mark = ","))) +
+  scale_fill_discrete(name = "",
+                      labels = c("Households with BIPOC",
+                                 "Households without BIPOC")) +
+  scale_color_discrete(name = "",
+                      labels = c("Households with BIPOC",
+                                 "Households without BIPOC")) +
+  scale_linetype_discrete(name = "",
+                      labels = c("Households with BIPOC",
+                                 "Households without BIPOC"))
+```
+
+
+``` {r interaction figure, message=FALSE, warning=FALSE}
+interact_plot(model3, pred = "has_BIPOC", modx = "has_kids", interval = TRUE) +
+  scale_y_continuous(name = "Probability of owning an electric vehicle",
+                     breaks = breaks <- seq(0, 0.04, by = 0.005),
+                     labels = paste(breaks * 100, "%", sep = "")) +
+  scale_x_continuous(name = "Households with BIPOC",
+                     breaks= breaks <- seq(0, 250, by = 50),
+                     labels = paste("$", prettyNum(breaks*1000, big.mark = ","))) +
+  scale_fill_discrete(name = "",
+                      labels = c("Households with kids",
+                                 "Households without kids")) +
+  scale_color_discrete(name = "",
+                      labels = c("Households with kids",
+                                 "Households without kids")) +
+  scale_linetype_discrete(name = "",
+                      labels = c("Households with kids",
+                                 "Households without kids"))
+```

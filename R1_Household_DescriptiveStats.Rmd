@@ -1,0 +1,1516 @@
+---
+title: "R1_Household_DescriptiveStats"
+author: "Carlee Griffeth"
+date: "2/20/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries, message=FALSE}
+library(tidyverse)
+library(survey)
+library(srvyr)
+library(treemapify)
+library(knitr)
+library(jtools)
+library(qqman)
+library(ggplot2)
+library(hrbrthemes)
+```
+
+# Setting Up
+
+```{r loading dataset}
+read_csv("NHTS_data/vehpub.csv")
+read_csv("NHTS_data/perpub.csv")
+read_csv("NHTS_data/hhpub.csv")
+```
+
+## Load HH NHTS Data
+
+```{r load hh data, message=FALSE}
+hhs <- read_csv("NHTS_data/hhpub.csv") %>%
+  select(HOUSEID, HHVEHCNT, YOUNGCHILD, WTHHFIN) %>%
+  mutate(has_veh = HHVEHCNT > 0) %>%
+  mutate(has_kid = YOUNGCHILD > 0) %>%
+  mutate(has_kids = YOUNGCHILD > 1) %>%
+  select(HOUSEID, has_veh, WTHHFIN) %>%
+  filter(has_veh)
+```
+
+## Load Veh NHTS Data
+
+```{r load vehicle data, message=FALSE}
+vehs <- read_csv("NHTS_data/vehpub.csv") %>%
+  select(HOUSEID, HHSIZE, NUMADLT, WRKCOUNT, DRVRCNT, HH_HISP, HH_RACE, HHFAMINC, HOMEOWN, HBHUR, FUELTYPE, HFUEL, WTHHFIN) %>%
+  mutate(income_k = case_when(HHFAMINC == "01" ~ 5,
+                              HHFAMINC == "02" ~ 12.5,
+                              HHFAMINC == "03" ~ 20,
+                              HHFAMINC == "04" ~ 30,
+                              HHFAMINC == "05" ~ 42.5,
+                              HHFAMINC == "06" ~ 62.5,
+                              HHFAMINC == "07" ~ 87.5,
+                              HHFAMINC == "08" ~ 112.5,
+                              HHFAMINC == "09" ~ 137.5,
+                              HHFAMINC == "10" ~ 175,
+                              HHFAMINC == "11" ~ 250,
+                              TRUE ~ -1)) %>%
+  mutate(race_eth = factor(case_when(HH_HISP == "01" ~ "Hispanic",
+                              HH_RACE == "01" ~ "NH_white",
+                              HH_RACE == "02" ~ "NH_Black",
+                              HH_RACE == "03" ~ "NH_Asian",
+                              TRUE ~ "Other"),
+                           levels = c("NH_white",
+                                      "NH_Black",
+                                      "NH_Asian",
+                                      "Hispanic",
+                                      "Other"))) %>%
+  mutate(type = case_when(FUELTYPE == "01" ~ "Gas",
+                          FUELTYPE == "02" ~ "Diesel",
+                          HFUEL == "01" ~ "Biodiesel",
+                          HFUEL == "02" ~ "Plug-in hybrid",
+                          HFUEL == "03" ~ "Fully electric",
+                          HFUEL == "04" ~ "Hybrid",
+                          TRUE ~ "Other")) %>%
+  mutate(ev = HFUEL == "03")%>%
+  mutate(homeown = case_when(HOMEOWN == "01" ~ "Own",
+                                   HOMEOWN == "02" ~ "Rent",
+                                   TRUE ~ "Other"))%>%
+  mutate(hhdensity = case_when(HBHUR == "C" ~ "Second City",
+                                     HBHUR == "R" ~ "Rural",
+                                     HBHUR == "S" ~ "Suburban",
+                                     HBHUR == "T" ~ "Small Town",
+                                     HBHUR == "U" ~ "Urban",
+                                     TRUE ~ "Other")) %>%
+  group_by(HOUSEID)
+```
+
+### Merge Veh variables into HH dataframe
+
+```{r}
+hhs <- hhs %>%
+  left_join(vehs)
+```
+
+## Load Ppl NHTS Data
+
+```{r load person data, message=FALSE}
+ppl <- read_csv("NHTS_data/perpub.csv") %>%
+  select(HOUSEID, WRKTRANS, WRK_HOME, NOCONG, TIMETOWK, WTPERFIN) %>%
+  mutate(modeshare = case_when(WRKTRANS == "01" ~ "Walk",
+                              WRKTRANS == "02" ~ "Bike",
+                              WRKTRANS == "03" ~ "Car",
+                              WRKTRANS == "04" ~ "SUV",
+                              WRKTRANS == "05" ~ "Van",
+                              WRKTRANS == "06" ~ "Pickup Truck",
+                              WRKTRANS == "07" ~ "Golfcart / Segway",
+                              WRKTRANS == "08" ~ "Motorcycle / Moped",
+                              WRKTRANS == "09" ~ "RV, motor home, ATV, snowmobile",
+                              WRKTRANS == "10" ~ "School bus",
+                              WRKTRANS == "11" ~ "Public or commuter bus",
+                              WRKTRANS == "12" ~ "Paratransit / Dial-a-ride",
+                              WRKTRANS == "13" ~ "Private / Charter / Tour / Shuttle bus",
+                              WRKTRANS == "14" ~ "City-to-city bus (Greyhound, Megabus)",
+                              WRKTRANS == "15" ~ "Amtrak / Commuter rail",
+                              WRKTRANS == "16" ~ "Subway / Elevated / Light rail / Street car",
+                              WRKTRANS == "17" ~ "Taxi / Limo (including Uber / Lyft)",
+                              WRKTRANS == "18" ~ "Rental car (including Zipcar / Car2Go)",
+                              WRKTRANS == "19" ~ "Airplane",
+                              WRKTRANS == "20" ~ "Boat / Ferry / Water taxi",
+                              TRUE ~ "Other")) %>%
+
+  mutate(wfh = case_when(WRK_HOME == "01" ~ "Yes",
+                                   WRK_HOME == "02" ~ "No",
+                                   TRUE ~ "Other")) %>%
+  group_by(HOUSEID)
+
+```
+
+### Merge Ppl variables into HH dataframe
+
+```{r}
+hhs <- hhs %>%
+  left_join(ppl)
+```
+
+## Applying the survey weights
+
+```{r Create survey}
+hhs_svy <- hhs %>%
+  as_survey(HOUSEID, weight = WTHHFIN)
+```
+
+
+# Descriptive Statistics
+
+## Car Type
+
+### Car Type Table
+
+```{r ev shares}
+ev_shares_list <- svytable(~type, hhs_svy)
+
+ev_shares_tibble <- tibble(`Type of vehicle` = 
+                             factor(names(ev_shares_list),
+                                    levels = c("Gas",
+                                               "Diesel",
+                                               "Biodiesel",
+                                               "Hybrid",
+                                               "Plug-in hybrid",
+                                               "Fully electric",
+                                               "Other")), 
+                           `Number of vehicles` = as.numeric(round(ev_shares_list,0)),
+                           `Percent of total` = paste(round((ev_shares_list / sum(ev_shares_list)) * 100, 2), "%", sep = "")) %>%
+ 
+   arrange(`Type of vehicle`)
+
+  kable(ev_shares_tibble, 
+       format.args = list(big.mark = ","),
+       align = "lrc")
+
+```
+
+### Car Type GGPlot
+
+```{r}
+ggplot(ev_shares_tibble, aes(area = `Number of vehicles`, 
+                             fill = `Type of vehicle`)) +
+  
+  geom_treemap(color = "transparent") +
+  
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "gray55",
+                               "#9c406d",
+                               "#a19f9c",
+                               "#dac17b",
+                               "#B9CAC4"))
+
+```
+
+#### Save Car Type GGPlot
+
+```{r}
+ggsave(
+  filename = "vehicle type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Income 
+
+### Income Table
+
+```{r, warning=FALSE}
+income_summary <- hhs_svy %>%
+  group_by(type) %>%
+  summarize(mean_inc = survey_mean(income_k),
+            med_inc = survey_quantile(income_k, 0.5)) %>%
+  mutate(type = factor(type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  arrange(type)
+
+colnames(income_summary) <- c("Type of vehicle",
+                    "Average owner's household income (thousands)",
+                    "Standard error of average",
+                    "Median owner's household income (thousands)",
+                    "Standard error of median")
+
+kable(income_summary, align = "lrrrr", digits = 1)
+```
+
+### Income ggplot
+
+```{r}
+ggplot(income_summary, aes(x = `Type of vehicle`,
+      y = `Average owner's household income (thousands)`,
+      fill = `Type of vehicle`)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+```
+
+#### Save Income ggplot
+
+```{r}
+ggsave(
+  filename = "income.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Race
+
+### Race by Type Table
+
+```{r, warning=FALSE}
+race_shares_list <- svytable(~race_eth+type, hhs_svy)
+
+race_shares_tibble <- tibble(
+  `Race/ethnicity` = factor(c(names(race_shares_list[,1]), "Total"),
+                       levels = c("NH_white",
+                                  "NH_Black",
+                                  "NH_Asian",
+                                  "Hispanic",
+                                  "Other",
+                                  "Total")), 
+   Gas = c(round((race_shares_list[,"Gas"] / 
+                              sum(race_shares_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((race_shares_list[,"Diesel"] / 
+                        sum(race_shares_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((race_shares_list[,"Biodiesel"] / 
+                        sum(race_shares_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((race_shares_list[,"Hybrid"] / 
+                        sum(race_shares_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((race_shares_list[,"Plug-in hybrid"] / 
+                          sum(race_shares_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((race_shares_list[,"Fully electric"] / 
+                          sum(race_shares_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((race_shares_list[,"Other"] / 
+                          sum(race_shares_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Race/ethnicity`)
+
+kable(race_shares_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by race and type")
+```
+
+### Race by Type ggplot
+
+```{r}
+race_shares_tibble %>%
+  filter(`Race/ethnicity` != "Total") %>%
+  pivot_longer(cols = -`Race/ethnicity`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Race/ethnicity`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual", 
+                    labels = c("Non-Hispanic white",
+                               "Non-Hispanic Black",
+                               "Non-Hispanic Asian",
+                               "Hispanic",
+                               "Other")) +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by household race/ethnicity",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+#### Save Race by Type ggplot
+
+```{r}
+ggsave(
+  filename = "race by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+### Car Type by Race Table
+
+```{r, warning=FALSE}
+race_shares_tibble2 <- tibble(
+  `Vehicle type` = factor(c(names(race_shares_list[1,]), "Total"),
+                          levels = c("Gas",
+                                     "Diesel",
+                                     "Biodiesel",
+                                     "Hybrid",
+                                     "Plug-in hybrid",
+                                     "Fully electric",
+                                     "Other",
+                                     "Total")), 
+  `Non-Hispanic white` = c(round((race_shares_list["NH_white",] / 
+                        sum(race_shares_list["NH_white",])) * 
+                          100, 2), 100), 
+  `Non-Hispanic Black` = c(round((race_shares_list["NH_Black",] / 
+                        sum(race_shares_list["NH_Black",])) * 
+                          100, 2), 100),
+  `Non-Hispanic Asian` = c(round((race_shares_list["NH_Asian",] / 
+                        sum(race_shares_list["NH_Asian",])) * 
+                          100, 2), 100),
+  Hispanic = c(round((race_shares_list["Hispanic",] / 
+                        sum(race_shares_list["Hispanic",])) * 
+                       100, 2), 100),
+   Other = c(round((race_shares_list["Other",] / 
+                        sum(race_shares_list["Other",])) * 
+                     100, 2), 100)) %>%
+  arrange(`Vehicle type`)
+
+kable(race_shares_tibble2, digits = 1,
+      caption = "Percent of vehicles owned, by type and race")
+```
+
+### Car Type by Race ggplot
+
+```{r}
+race_shares_tibble2 %>%
+  filter(`Vehicle type` != "Total" &
+           `Vehicle type` != "Gas") %>%
+  pivot_longer(cols = -`Vehicle type`, 
+               names_to = "Race/ethnicity", values_to = "Share") %>%
+  mutate(`Race/ethnicity` = factor(`Race/ethnicity`, 
+                                   levels = c("Non-Hispanic white",
+                                              "Non-Hispanic Black",
+                                              "Non-Hispanic Asian",
+                                              "Hispanic",
+                                              "Other"))) %>%
+  ggplot(aes(x = `Race/ethnicity`, y = Share, fill = `Vehicle type`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+"Percent of vehicles by vehicle type\n(gas-powered vehicles not shown)",
+            breaks = breaks <- seq(0, 6, by = 0.5),
+            labels = paste(breaks, "%", sep = "")) +
+  scale_x_discrete(labels = c("Non-Hispanic\nwhite",
+                              "Non-Hispanic\nBlack",
+                              "Non-Hispanic\nAsian",
+                              "Hispanic",
+                              "Other"))
+```
+
+#### Save Car Type by Race ggplot
+
+```{r}
+ggsave(
+  filename = "type by race.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Density
+
+### Density by Type Table
+
+```{r, warning=FALSE}
+density_list <- svytable(~hhdensity+type, hhs_svy)
+
+density_tibble <- tibble(
+  `Density` = factor(c(names(density_list[,1]), "Total"),
+                       levels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total")), 
+   Gas = c(round((density_list[,"Gas"] / 
+                              sum(density_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((density_list[,"Diesel"] / 
+                        sum(density_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((density_list[,"Biodiesel"] / 
+                        sum(density_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((density_list[,"Hybrid"] / 
+                        sum(density_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((density_list[,"Plug-in hybrid"] / 
+                          sum(density_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((density_list[,"Fully electric"] / 
+                          sum(density_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((density_list[,"Other"] / 
+                          sum(density_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Density`)
+
+kable(density_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by density")
+```
+
+### Density by Type ggplot
+
+```{r}
+density_tibble %>%
+  filter(`Density` != "Total") %>%
+  pivot_longer(cols = -`Density`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Density`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual", 
+                    labels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total")) +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by density",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+#### Save Density by Type ggplot
+
+```{r}
+ggsave(
+  filename = "density by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+### Car Type by Density Table
+
+```{r, warning=FALSE}
+density_tibble2 <- tibble(
+  `Vehicle type` = factor(c(names(density_list[1,]), "Total"),
+                          levels = c("Gas",
+                                     "Diesel",
+                                     "Biodiesel",
+                                     "Hybrid",
+                                     "Plug-in hybrid",
+                                     "Fully electric",
+                                     "Other",
+                                     "Total")), 
+  `Second City` = c(round((density_list["Second City",] / 
+                        sum(density_list["Second City",])) * 
+                          100, 2), 100), 
+  `Rural` = c(round((density_list["Rural",] / 
+                        sum(density_list["Rural",])) * 
+                          100, 2), 100),
+  `Suburban` = c(round((density_list["Suburban",] / 
+                        sum(density_list["Suburban",])) * 
+                          100, 2), 100),
+  `Small Town` = c(round((density_list["Small Town",] / 
+                        sum(density_list["Small Town",])) * 
+                       100, 2), 100),
+  `Urban` = c(round((density_list["Urban",] / 
+                        sum(density_list["Urban",])) * 
+                       100, 2), 100),
+   Other = c(round((density_list["Other",] / 
+                        sum(density_list["Other",])) * 
+                     100, 2), 100)) %>%
+  arrange(`Vehicle type`)
+
+kable(density_tibble2, digits = 1,
+      caption = "Percent of vehicles owned, by type and race")
+```
+
+### Car Type by Density ggplot
+
+```{r}
+density_tibble2 %>%
+  filter(`Vehicle type` != "Total" &
+           `Vehicle type` != "Gas") %>%
+  pivot_longer(cols = -`Vehicle type`, 
+               names_to = "Density", values_to = "Share") %>%
+  mutate(`Density` = factor(`Density`, 
+                                   levels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total"))) %>%
+  ggplot(aes(x = `Density`, y = Share, fill = `Vehicle type`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+"Percent of vehicles by vehicle type\n(gas-powered vehicles not shown)",
+            breaks = breaks <- seq(0, 6, by = 0.5),
+            labels = paste(breaks, "%", sep = "")) +
+  scale_x_discrete(labels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total"))
+```
+
+#### Save Car Type by Density ggplot
+
+```{r}
+ggsave(
+  filename = "type by density.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Homeownership
+
+### HH Ownership by Type Table
+
+```{r, warning=FALSE}
+ownrent_list <- svytable(~homeown+type, hhs_svy)
+
+ownrent_tibble <- tibble(
+  `Home Ownership` = factor(c(names(ownrent_list[,1]), "Total"),
+                       levels = c("Own",
+                                  "Rent",
+                                  "Other",
+                                  "Total")), 
+   Gas = c(round((ownrent_list[,"Gas"] / 
+                              sum(ownrent_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((ownrent_list[,"Diesel"] / 
+                        sum(ownrent_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((ownrent_list[,"Biodiesel"] / 
+                        sum(ownrent_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((ownrent_list[,"Hybrid"] / 
+                        sum(ownrent_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((ownrent_list[,"Plug-in hybrid"] / 
+                          sum(ownrent_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((ownrent_list[,"Fully electric"] / 
+                          sum(ownrent_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((ownrent_list[,"Other"] / 
+                          sum(ownrent_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Home Ownership`)
+
+kable(ownrent_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by homeowners vs renters and type")
+```
+
+### HH Ownership by Type ggplot
+
+```{r}
+ownrent_tibble %>%
+  filter(`Home Ownership` != "Total") %>%
+  pivot_longer(cols = -`Home Ownership`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Home Ownership`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual", 
+                    labels = c("Own",
+                               "Rent",
+                               "Other")) +
+    scale_fill_manual(values = c("#303f39",
+                               "#9c406d",
+                               "#559274")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by household homeownership",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+
+#### Save HH Ownership by Type ggplot
+
+```{r}
+ggsave(
+  filename = "hh ownership by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+### Car Type by HH Ownership Table
+
+```{r, warning=FALSE}
+ownrent_tibble2 <- tibble(
+  `Vehicle type` = factor(c(names(ownrent_list[1,]), "Total"),
+                          levels = c("Gas",
+                                     "Diesel",
+                                     "Biodiesel",
+                                     "Hybrid",
+                                     "Plug-in hybrid",
+                                     "Fully electric",
+                                     "Other",
+                                     "Total")), 
+  `Own` = c(round((ownrent_list["Own",] / 
+                        sum(ownrent_list["Own",])) * 
+                          100, 2), 100), 
+  `Rent` = c(round((ownrent_list["Rent",] / 
+                        sum(ownrent_list["Rent",])) * 
+                          100, 2), 100),
+   Other = c(round((ownrent_list["Other",] / 
+                        sum(ownrent_list["Other",])) * 
+                     100, 2), 100)) %>%
+  arrange(`Vehicle type`)
+
+kable(ownrent_tibble2, digits = 1,
+      caption = "Percent of vehicles owned, by type and homeownership")
+```
+
+### Car Type by HH Ownership ggplot
+
+```{r}
+ownrent_tibble2 %>%
+  filter(`Vehicle type` != "Total" &
+           `Vehicle type` != "Gas") %>%
+  pivot_longer(cols = -`Vehicle type`, 
+               names_to = "Home Ownership", values_to = "Share") %>%
+  mutate(`Home Ownership` = factor(`Home Ownership`, 
+                                   levels = c("Own",
+                                  "Rent",
+                                  "Other"))) %>%
+  ggplot(aes(x = `Home Ownership`, y = Share, fill = `Vehicle type`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+"Percent of vehicles by vehicle type\n(gas-powered vehicles not shown)",
+            breaks = breaks <- seq(0, 6, by = 0.5),
+            labels = paste(breaks, "%", sep = "")) +
+  scale_x_discrete(labels = c("Own",
+                                  "Rent",
+                                  "Other"))
+```
+
+#### Save Car Type by HH Ownership ggplot
+
+```{r}
+ggsave(
+  filename = "type by homeownership.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Mode to Work
+
+### Mode to Work by Type Table
+
+```{r, warning=FALSE}
+modeshare_list <- svytable(~modeshare+type, hhs_svy)
+
+modeshare_tibble <- tibble(
+  `Mode to Work` = factor(c(names(modeshare_list[,1]), "Total"),
+                       levels = c("Walk",
+                                  "Bike",
+                                  "Car",
+                                  "SUV",
+                                  "Van",
+                                  "Pickup Truck",
+                                  "Golfcart / Segway",
+                                  "Motorcycle / Moped",
+                                  "RV, motor home, ATV, snowmobile",
+                                  "School bus",
+                                  "Public or commuter bus",
+                                  "Paratransit / Dial-a-ride",
+                                  "Private / Charter / Tour / Shuttle bus",
+                                  "City-to-city bus (Greyhound, Megabus)",
+                                  "Amtrak / Commuter rail",
+                                  "Subway / Elevated / Light rail / Street car",
+                                  "Taxi / Limo (including Uber / Lyft)",
+                                  "Rental car (including Zipcar / Car2Go)",
+                                  "Airplane",
+                                  "Boat / Ferry / Water taxi",
+                                  "Other",
+                                  "Total")), 
+   Gas = c(round((modeshare_list[,"Gas"] / 
+                              sum(modeshare_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((modeshare_list[,"Diesel"] / 
+                        sum(modeshare_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((modeshare_list[,"Biodiesel"] / 
+                        sum(modeshare_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((modeshare_list[,"Hybrid"] / 
+                        sum(modeshare_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((modeshare_list[,"Plug-in hybrid"] / 
+                          sum(modeshare_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((modeshare_list[,"Fully electric"] / 
+                          sum(modeshare_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((modeshare_list[,"Other"] / 
+                          sum(modeshare_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Mode to Work`)
+
+
+kable(modeshare_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by mode to work and type")
+```
+
+### Mode to Work by Type ggplot
+
+```{r}
+modeshare_tibble %>%
+  filter(`Mode to Work` != "Total") %>%
+  pivot_longer(cols = -`Mode to Work`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Mode to Work`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual", 
+                    labels = c("Walk",
+                                  "Bike",
+                                  "Car",
+                                  "SUV",
+                                  "Van",
+                                  "Pickup Truck",
+                                  "Golfcart / Segway",
+                                  "Motorcycle / Moped",
+                                  "RV, motor home, ATV, snowmobile",
+                                  "School bus",
+                                  "Public or commuter bus",
+                                  "Paratransit / Dial-a-ride",
+                                  "Private / Charter / Tour / Shuttle bus",
+                                  "City-to-city bus (Greyhound, Megabus)",
+                                  "Amtrak / Commuter rail",
+                                  "Subway / Elevated / Light rail / Street car",
+                                  "Taxi / Limo (including Uber / Lyft)",
+                                  "Rental car (including Zipcar / Car2Go)",
+                                  "Airplane",
+                                  "Boat / Ferry / Water taxi",
+                                  "Other"))  +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by mode to work",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+#### Save Mode to Work by Type ggplot
+
+```{r}
+ggsave(
+  filename = "modeshare by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+### Car Type by Mode to Work Table
+
+```{r, warning=FALSE}
+modeshare_tibble2 <- tibble(
+  `Vehicle type` = factor(c(names(modeshare_list[1,]), "Total"),
+                          levels = c("Gas",
+                                     "Diesel",
+                                     "Biodiesel",
+                                     "Hybrid",
+                                     "Plug-in hybrid",
+                                     "Fully electric",
+                                     "Other",
+                                     "Total")), 
+  `Walk` = c(round((modeshare_list["Walk",] / 
+                        sum(modeshare_list["Walk",])) * 
+                          100, 2), 100), 
+  `Bike` = c(round((modeshare_list["Bike",] / 
+                        sum(modeshare_list["Bike",])) * 
+                          100, 2), 100),
+  `Car` = c(round((modeshare_list["Car",] / 
+                        sum(modeshare_list["Car",])) * 
+                          100, 2), 100), 
+  `SUV` = c(round((modeshare_list["SUV",] / 
+                        sum(modeshare_list["SUV",])) * 
+                          100, 2), 100),
+  `Van` = c(round((modeshare_list["Van",] / 
+                        sum(modeshare_list["Van",])) * 
+                          100, 2), 100), 
+  `Pickup Truck` = c(round((modeshare_list["Pickup Truck",] / 
+                        sum(modeshare_list["Pickup Truck",])) * 
+                          100, 2), 100),
+  `Golfcart / Segway` = c(round((modeshare_list["Golfcart / Segway",] / 
+                        sum(modeshare_list["Golfcart / Segway",])) * 
+                          100, 2), 100), 
+  `Motorcycle / Moped` = c(round((modeshare_list["Motorcycle / Moped",] / 
+                        sum(modeshare_list["Motorcycle / Moped",])) * 
+                          100, 2), 100),
+  `RV, motor home, ATV, snowmobile` = c(round((modeshare_list["RV, motor home, ATV, snowmobile",] / 
+                        sum(modeshare_list["RV, motor home, ATV, snowmobile",])) * 
+                          100, 2), 100), 
+  `School bus` = c(round((modeshare_list["School bus",] / 
+                        sum(modeshare_list["School bus",])) * 
+                          100, 2), 100),
+  `Public or commuter bus` = c(round((modeshare_list["Public or commuter bus",] / 
+                        sum(modeshare_list["Public or commuter bus",])) * 
+                          100, 2), 100), 
+  `Paratransit / Dial-a-ride` = c(round((modeshare_list["Paratransit / Dial-a-ride",] / 
+                        sum(modeshare_list["Paratransit / Dial-a-ride",])) * 
+                          100, 2), 100),
+  `Private / Charter / Tour / Shuttle bus` = c(round((modeshare_list["Private / Charter / Tour / Shuttle bus",] / 
+                        sum(modeshare_list["Private / Charter / Tour / Shuttle bus",])) * 
+                          100, 2), 100), 
+  `City-to-city bus (Greyhound, Megabus)` = c(round((modeshare_list["City-to-city bus (Greyhound, Megabus)",] / 
+                        sum(modeshare_list["City-to-city bus (Greyhound, Megabus)",])) * 
+                          100, 2), 100),
+  `Amtrak / Commuter rail` = c(round((modeshare_list["Amtrak / Commuter rail",] / 
+                        sum(modeshare_list["Amtrak / Commuter rail",])) * 
+                          100, 2), 100), 
+  `Subway / Elevated / Light rail / Street car` = c(round((modeshare_list["Subway / Elevated / Light rail / Street car",] / 
+                        sum(modeshare_list["Subway / Elevated / Light rail / Street car",])) * 
+                          100, 2), 100),
+  `Taxi / Limo (including Uber / Lyft)` = c(round((modeshare_list["Taxi / Limo (including Uber / Lyft)",] / 
+                        sum(modeshare_list["Taxi / Limo (including Uber / Lyft)",])) * 
+                          100, 2), 100), 
+  `Rental car (including Zipcar / Car2Go)` = c(round((modeshare_list["Rental car (including Zipcar / Car2Go)",] / 
+                        sum(modeshare_list["Rental car (including Zipcar / Car2Go)",])) * 
+                          100, 2), 100),
+    `Airplane` = c(round((modeshare_list["Airplane",] / 
+                        sum(modeshare_list["Airplane",])) * 
+                          100, 2), 100), 
+  `Boat / Ferry / Water taxi` = c(round((modeshare_list["Boat / Ferry / Water taxi",] / 
+                        sum(modeshare_list["Boat / Ferry / Water taxi",])) * 
+                          100, 2), 100),
+   Other = c(round((modeshare_list["Other",] / 
+                        sum(modeshare_list["Other",])) * 
+                     100, 2), 100)) %>%
+  arrange(`Vehicle type`)
+
+kable(modeshare_tibble2, digits = 1,
+      caption = "Percent of vehicles owned, by type and homeownership")
+```
+
+```{r}
+write.csv(modeshare_tibble2, file = "modeshare_tibble2.csv")
+```
+### Car Type by Mode to Work ggplot
+
+```{r}
+modeshare_tibble2 %>%
+  filter(`Vehicle type` != "Total" &
+           `Vehicle type` != "Gas") %>%
+  pivot_longer(cols = -`Vehicle type`, 
+               names_to = "Mode to Work", values_to = "Share") %>%
+  mutate(`Mode to Work` = factor(`Mode to Work`, 
+                                   levels = c("Walk",
+                                  "Bike",
+                                  "Car",
+                                  "SUV",
+                                  "Van",
+                                  "Pickup Truck",
+                                  "Golfcart / Segway",
+                                  "Motorcycle / Moped",
+                                  "RV, motor home, ATV, snowmobile",
+                                  "School bus",
+                                  "Public or commuter bus",
+                                  "Paratransit / Dial-a-ride",
+                                  "Private / Charter / Tour / Shuttle bus",
+                                  "City-to-city bus (Greyhound, Megabus)",
+                                  "Amtrak / Commuter rail",
+                                  "Subway / Elevated / Light rail / Street car",
+                                  "Taxi / Limo (including Uber / Lyft)",
+                                  "Rental car (including Zipcar / Car2Go)",
+                                  "Airplane",
+                                  "Boat / Ferry / Water taxi",
+                                  "Other"))) %>%
+  ggplot(aes(x = `Mode to Work`, y = Share, fill = `Vehicle type`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+"Percent of vehicles by vehicle type\n(gas-powered vehicles not shown)",
+            breaks = breaks <- seq(0, 6, by = 0.5),
+            labels = paste(breaks, "%", sep = "")) +
+  scale_x_discrete(labels = c("Walk",
+                                  "Bike",
+                                  "Car",
+                                  "SUV",
+                                  "Van",
+                                  "Pickup Truck",
+                                  "Golfcart / Segway",
+                                  "Motorcycle / Moped",
+                                  "RV, motor home, ATV, snowmobile",
+                                  "School bus",
+                                  "Public or commuter bus",
+                                  "Paratransit / Dial-a-ride",
+                                  "Private / Charter / Tour / Shuttle bus",
+                                  "City-to-city bus (Greyhound, Megabus)",
+                                  "Amtrak / Commuter rail",
+                                  "Subway / Elevated / Light rail / Street car",
+                                  "Taxi / Limo (including Uber / Lyft)",
+                                  "Rental car (including Zipcar / Car2Go)",
+                                  "Airplane",
+                                  "Boat / Ferry / Water taxi",
+                                  "Other"))
+```
+
+#### Save Car Type by Mode to Work ggplot
+
+```{r}
+ggsave(
+  filename = "type by modeshare.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Work From Home
+
+### Work From Home by Type Table
+
+```{r, warning=FALSE}
+wfh_list <- svytable(~wfh+type, hhs_svy)
+
+wfh_tibble <- tibble(
+  `Work From Home` = factor(c(names(wfh_list[,1]), "Total"),
+                       levels = c("No",
+                                  "Yes",
+                                  "Other",
+                                  "Total")), 
+   Gas = c(round((wfh_list[,"Gas"] / 
+                              sum(wfh_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((wfh_list[,"Diesel"] / 
+                        sum(wfh_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((wfh_list[,"Biodiesel"] / 
+                        sum(wfh_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((wfh_list[,"Hybrid"] / 
+                        sum(wfh_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((wfh_list[,"Plug-in hybrid"] / 
+                          sum(wfh_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((wfh_list[,"Fully electric"] / 
+                          sum(wfh_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((wfh_list[,"Other"] / 
+                          sum(wfh_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Work From Home`)
+
+
+kable(wfh_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by work from home and type")
+```
+
+### Work From Home by Type ggplot
+
+```{r}
+wfh_tibble %>%
+  filter(`Work From Home` != "Total" &
+           `Work From Home` != "Other" &
+           `Work From Home` != "No" ) %>%
+  pivot_longer(cols = -`Work From Home`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Work From Home`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual", 
+                    labels = c("No",
+                               "Yes",
+                                  "Other"))  +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by work from home",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+#### Save Work From Home by Type ggplot
+
+```{r}
+ggsave(
+  filename = "wfh by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+### Car Type by Work From Home Table
+
+```{r, warning=FALSE}
+wfh_tibble2 <- tibble(
+  `Vehicle type` = factor(c(names(wfh_list[1,]), "Total"),
+                          levels = c("Gas",
+                                     "Diesel",
+                                     "Biodiesel",
+                                     "Hybrid",
+                                     "Plug-in hybrid",
+                                     "Fully electric",
+                                     "Other",
+                                     "Total")), 
+  `Yes` = c(round((wfh_list["Yes",] / 
+                        sum(wfh_list["Yes",])) * 
+                          100, 2), 100), 
+  `No` = c(round((wfh_list["No",] / 
+                        sum(wfh_list["No",])) * 
+                          100, 2), 100)) %>%
+  arrange(`Vehicle type`)
+
+kable(wfh_tibble2, digits = 1,
+      caption = "Percent of vehicles owned, by type and work from home")
+```
+
+### Car Type by Work From Home ggplot
+
+```{r}
+wfh_tibble2 %>%
+  filter(`Vehicle type` != "Total" &
+           `Vehicle type` != "Gas") %>%
+  pivot_longer(cols = -`Vehicle type`, 
+               names_to = "Work From Home", values_to = "Share") %>%
+  mutate(`Work From Home` = factor(`Work From Home`, 
+                                   levels = c("Yes",
+                                  "No"))) %>%
+  ggplot(aes(x = `Work From Home`, y = Share, fill = `Vehicle type`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+"Percent of vehicles by vehicle type\n(gas-powered vehicles not shown)",
+            breaks = breaks <- seq(0, 6, by = 0.5),
+            labels = paste(breaks, "%", sep = "")) +
+  scale_x_discrete(labels = c("Yes",
+                                  "No",
+                                  "Other"))
+```
+
+#### Save Car Type by Work From Home ggplot
+
+```{r}
+ggsave(
+  filename = "type by wfh.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Time to Work No Traffic
+
+### Time to Work No Traffic by Type Table
+
+```{r, warning=FALSE}
+timework_list <- svytable(~NOCONG+type, hhs_svy)
+
+timework_tibble <- tibble(
+  `Time to Work` = factor(c(names(timework_list[,1]), "Total")), 
+   Gas = c(round((timework_list[,"Gas"] / 
+                              sum(timework_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((timework_list[,"Diesel"] / 
+                        sum(timework_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((timework_list[,"Biodiesel"] / 
+                        sum(timework_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((timework_list[,"Hybrid"] / 
+                        sum(timework_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((timework_list[,"Plug-in hybrid"] / 
+                          sum(timework_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((timework_list[,"Fully electric"] / 
+                          sum(timework_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((timework_list[,"Other"] / 
+                          sum(timework_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Time to Work`)
+
+
+kable(timework_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by work from home and type")
+```
+
+### Time to Work No Traffic by Type ggplot
+
+```{r}
+timework_tibble %>%
+  filter(`Time to Work` != "Total") %>%
+  pivot_longer(cols = -`Time to Work`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Time to Work`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual")  +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by mode to work",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+#### Save Time to Work No Traffic by Type ggplot
+
+```{r}
+ggsave(
+  filename = "modeshare by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Time to Work
+
+### Time to Work Table
+
+```{r, warning=FALSE}
+timework2_list <- svytable(~TIMETOWK+type, hhs_svy)
+
+timework2_tibble <- tibble(
+  `Time to Work 2` = factor(c(names(timework2_list[,1]), "Total")), 
+   Gas = c(round((timework2_list[,"Gas"] / 
+                              sum(timework2_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((timework2_list[,"Diesel"] / 
+                        sum(timework2_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((timework2_list[,"Biodiesel"] / 
+                        sum(timework2_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((timework2_list[,"Hybrid"] / 
+                        sum(timework2_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((timework2_list[,"Plug-in hybrid"] / 
+                          sum(timework2_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((timework2_list[,"Fully electric"] / 
+                          sum(timework2_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((timework2_list[,"Other"] / 
+                          sum(timework2_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Time to Work 2`)
+
+
+kable(timework2_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by work from home and type")
+```
+
+### Time to Work by Type ggplot
+
+```{r}
+timework2_tibble %>%
+  filter(`Time to Work 2` != "Total") %>%
+  pivot_longer(cols = -`Time to Work 2`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Time to Work 2`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual")  +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by mode to work",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+
+#### Save Time to Work by Type ggplot
+
+```{r}
+ggsave(
+  filename = "modeshare by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```

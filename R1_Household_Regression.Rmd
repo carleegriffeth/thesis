@@ -98,6 +98,7 @@ model1 <- glm(has_ev ~ income_k + has_BIPOC + avg_commute + has_kids + homeown +
 
 summary(model1)
 ```
+
 ## Log Income
 
 ```{r three-IV regression}

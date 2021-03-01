@@ -1,0 +1,336 @@
+---
+title: "R2_Tract_Regression"
+author: "Carlee Griffeth"
+date: "2/22/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setting Up
+
+## Loading Libraries
+
+*Note: there may be unecessaary libraries in this list; this has become a running list of libraries I've added to try different functions that I've found online so some may not actually be needed.
+
+```{r load libraries, message=FALSE}
+library(tidyverse)
+library(tidycensus)
+library(purrr)
+library(survey)
+library(srvyr)
+library(knitr)
+library(jtools)
+library(sf)
+library(sp)
+library(units)
+library(nngeo)
+library(leaflet)
+library(tigris)
+library(reshape2)
+library(httr)
+library(jsonlite)
+library(rgdal)
+library(maps)
+library(mapdata)
+library(dplyr)
+library(ggplot2)
+library(cartogram)
+library(ggspatial)
+library(ggthemes)
+library(rnaturalearth)
+library("ggthemes")
+library("mapproj")
+library("ggspatial")
+
+census_api_key("84fd7c10ce8fd8c15d8852fd68abaa8790f1c29d")
+options(tigris_use_cache = TRUE)
+```
+
+# Loading & Cleaning Data
+
+## EVCS Dataset
+
+Manually downaloaded and read into r.
+
+Electric vehicle charging station data is pulled from the US Department of Energy Alternative Fuels Data Center's Alternative Fueling Station Locator at https://afdc.energy.gov/stations/#/analyze?country=US&fuel=ELEC&ev_levels=all&access=public&access=private
+
+Filtered for download by:
+1. Location: United States -- all states/territories
+2. Fuel: Electric -- all charger types, all connectors, all networks selected
+3. Station: 
+    - public and private access; 
+    - status: available; 
+    - owner: all; 
+    - payment: all
+
+```{r loading datasets}
+evcs <- read_csv("Station_Data/evcs.csv") %>%
+                  select(Station_Name, Street_Address, City, StateAbb, ZIP, 
+                         Access_Days_Time, EV_Network, Latitude, Longitude, 
+                         Owner_Type_Code, Access_Code, EV_Pricing, EV_Connector) %>%
+                  mutate(access_time = case_when(Access_Days_Time == "24 hours daily" ~ "24 hours daily",
+                                            Access_Days_Time == "24 hours" ~ "24 hours",
+                                            Access_Days_Time == "MON: 24 hours | TUE: 24 hours | WED: 24 hours | THU: 24 hours | FRI: 24 hours | SAT: 24 hours | SUN: 24 hours" ~ "24 hours daily", 
+                                            Access_Days_Time == "MO: 12:00am-12:00am; TU: 12:00am-12:00am; WE: 12:00am-12:00am; TH: 12:00am-12:00am; FR: 12:00am-12:00am; SA: 12:00am-12:00am; SU: 12:00am-12:00am" ~ "24 hours daily",
+                                            TRUE ~ "Not 24 hours daily")) %>%
+                  mutate(ownership = case_when(Owner_Type_Code == "FG" ~ "Federal Government",
+                                               Owner_Type_Code == "J" ~ "Joint",
+                                               Owner_Type_Code == "LG" ~ "Local Government",
+                                               Owner_Type_Code == "P" ~ "Private",
+                                               Owner_Type_Code == "SG" ~ "State Government",
+                                               Owner_Type_Code == "T" ~ "Utility",
+                                               TRUE ~ "Blank",
+                                               FALSE ~ "None")) %>%
+                  mutate(access_type = case_when(Access_Code == "public" ~ "Public Accessiblity",
+                                               Access_Code == "private" ~ "Private Accessibility",
+                                               TRUE ~ "Blank",
+                                               FALSE ~ "None")) %>%
+                  mutate(freepay = case_when(EV_Pricing == "Free" ~ "Free",
+                                             EV_Pricing == "FREE" ~ "Free",
+                                             TRUE ~ "Pay",
+                                             FALSE ~ "Pay")) %>%
+select(Station_Name, Street_Address, City, StateAbb, ZIP, access_time, EV_Network, Latitude, Longitude, ownership, access_type, freepay, EV_Connector)
+
+free_evcs <- filter(evcs, access_time != "Not 24 hours daily" & access_type == "Public Accessiblity" & freepay != "Pay" & EV_Network != "Tesla Destination" & EV_Connector != "TESLA")
+```
+
+## Census Data
+
+Pulling All Tracts
+
+NOTE: 'ALAND' variable in "us_shape" is in square meters. 
+
+tract polygons projected in: NAD83
+
+```{r}
+#Loading the list of ACS variables just to have on hand for reference. 
+#v17 <- load_variables(2017, "acs5", cache = TRUE)
+
+us <- unique(fips_codes$state)[1:51]
+
+us_shape <- map_df(us, function(x) {
+                  tracts(state = x, 
+                            cb = FALSE, 
+                          year = 2017)})
+```
+
+### Selecting Census Variables 
+
+  B01003_001 = total population
+  B25001_001 = total housing units
+  B25003_001 = total occupied housing units
+  B25003_002 = total owner occupied housing units
+  B25003_003 = total renter  occupied housing units
+  B03002_003 = Not Hispanic or Latino!!White alone
+  B03002_004 = Not Hispanic or Latino!!Black or African American alone
+  B03002_005 = Not Hispanic or Latino!!American Indian and Alaska Native alone
+  B03002_006 = Not Hispanic or Latino!!Asian alone
+  B03002_007 = Not Hispanic or Latino!!Native Hawaiian and Other Pacific Islander alone
+  B03002_012 = Hispanic or Latino
+  B08301_001 = Means to work: Total
+  B08301_003 = Means to work: Car truck or van!!Drove alone
+  B08301_010 = Means to work: Public transportation (excluding taxicab)
+  B08301_021 = Worked at home
+  B19013_001 = Median household income in the past 12 months (in 2017 inflation-adjusted dollars)
+
+```{r selecting census variables}
+acs_data <- map_df(us, function(x) {
+                  get_acs(geography ="tract",
+                          geometry = TRUE,
+                          variables = c("B01003_001", "B25001_001", "B25003_001", "B25003_002", 
+                                        "B25003_003", "B03002_003", "B03002_004", "B03002_005",
+                                        "B03002_006", "B03002_007", "B03002_012", "B08301_001", 
+                                        "B08301_003", "B08301_010", "B08301_021", "B19013_001"),
+                          output = "wide",
+                          state = x,
+                          year = 2017)})
+
+## Renaming Columns
+
+colnames(acs_data) <- c("GEOID", "NAME", "Tot_Pop", "Tot_Pop_MOE", "Tot_HU", "Tot_HU_MOE", "Tot_HU_Occ", "Tot_HU_Occ_MOE",
+                        "Tot_HU_OwnOcc", "Tot_HU_OwnOcc_MOE", "Tot_HU_RentOcc", "Tot_HU_RentOcc_MOE", "Race_WhiteNH", "Race_WhiteNH_MOE",
+                        "Race_BlackNH", "Race_BlackNH_MOE", "Race_IndigenousNH", "Race_IndigenousNH_MOE", "Race_AsianNH", "Race_AsianNH_MOE", 
+                        "Race_PacIslNH", "Race_PacIslNH_MOE", "Race_Hispanic", "Race_Hispanic_MOE", "Mode_Total", "Mode_Total_MOE", 
+                        "Mode_CarAlone", "Mode_CarAlone_MOE", "Mode_PubTransit", "Mode_PubTransit_MOE", "Mode_WFH", "Mode_WFH_MOE", 
+                        "MedInc", "MedInc_MOE", "geometry")
+
+## Cleaning Data
+
+acs_data <- acs_data %>%
+  mutate(acs_data, percent_white = (Race_WhiteNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_black = (Race_BlackNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_indig = (Race_IndigenousNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_asian = (Race_AsianNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_pacisl = (Race_PacIslNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_hispanic = (Race_Hispanic / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_caralone = (Mode_CarAlone / Mode_Total)*100) %>%
+  mutate(acs_data, percent_pubtransit = (Mode_PubTransit / Mode_Total)*100) %>%
+  mutate(acs_data, percent_wfh = (Mode_WFH / Mode_Total)*100) %>%
+  mutate(FIPS = GEOID) %>%
+  mutate(states = case_when(FIPS >= "01000000000" & FIPS <= "01999999999" ~ 01,
+                            FIPS >= "02000000000" & FIPS <= "02999999999" ~ 02,
+                            FIPS >= "04000000000" & FIPS <= "04999999999" ~ 04,
+                            FIPS >= "05000000000" & FIPS <= "05999999999" ~ 05,
+                            FIPS >= "06000000000" & FIPS <= "06999999999" ~ 06,
+                            FIPS >= "08000000000" & FIPS <= "08999999999" ~ 08,
+                            FIPS >= "09000000000" & FIPS <= "09999999999" ~ 09,
+                            FIPS >= "11000000000" & FIPS <= "11999999999" ~ 11,
+                            FIPS >= "10000000000" & FIPS <= "10999999999" ~ 10,
+                            FIPS >= "12000000000" & FIPS <= "12999999999" ~ 12,
+                            FIPS >= "13000000000" & FIPS <= "13999999999" ~ 13,
+                            FIPS >= "15000000000" & FIPS <= "15999999999" ~ 15,
+                            FIPS >= "16000000000" & FIPS <= "16999999999" ~ 16,
+                            FIPS >= "17000000000" & FIPS <= "17999999999" ~ 17,
+                            FIPS >= "18000000000" & FIPS <= "18999999999" ~ 18,
+                            FIPS >= "19000000000" & FIPS <= "19999999999" ~ 19,
+                            FIPS >= "20000000000" & FIPS <= "20999999999" ~ 20,
+                            FIPS >= "21000000000" & FIPS <= "21999999999" ~ 21,
+                            FIPS >= "22000000000" & FIPS <= "22999999999" ~ 22,
+                            FIPS >= "23000000000" & FIPS <= "23999999999" ~ 23,
+                            FIPS >= "24000000000" & FIPS <= "24999999999" ~ 24,
+                            FIPS >= "25000000000" & FIPS <= "25999999999" ~ 25,
+                            FIPS >= "26000000000" & FIPS <= "26999999999" ~ 26,
+                            FIPS >= "27000000000" & FIPS <= "27999999999" ~ 27,
+                            FIPS >= "28000000000" & FIPS <= "28999999999" ~ 28,
+                            FIPS >= "29000000000" & FIPS <= "29999999999" ~ 29,
+                            FIPS >= "30000000000" & FIPS <= "30999999999" ~ 30,
+                            FIPS >= "01000000000" & FIPS <= "31999999999" ~ 31,
+                            FIPS >= "01000000000" & FIPS <= "32999999999" ~ 32,
+                            FIPS >= "01000000000" & FIPS <= "33999999999" ~ 33,
+                            FIPS >= "01000000000" & FIPS <= "34999999999" ~ 34,
+                            FIPS >= "01000000000" & FIPS <= "35999999999" ~ 35,
+                            FIPS >= "01000000000" & FIPS <= "36999999999" ~ 36,
+                            FIPS >= "01000000000" & FIPS <= "37999999999" ~ 37,
+                            FIPS >= "01000000000" & FIPS <= "38999999999" ~ 38,
+                            FIPS >= "01000000000" & FIPS <= "39999999999" ~ 39,
+                            FIPS >= "01000000000" & FIPS <= "40999999999" ~ 40,
+                            FIPS >= "01000000000" & FIPS <= "41999999999" ~ 41,
+                            FIPS >= "01000000000" & FIPS <= "42999999999" ~ 42,
+                            FIPS >= "01000000000" & FIPS <= "44999999999" ~ 44,
+                            FIPS >= "01000000000" & FIPS <= "45999999999" ~ 45,
+                            FIPS >= "01000000000" & FIPS <= "46999999999" ~ 46,
+                            FIPS >= "01000000000" & FIPS <= "47999999999" ~ 47,
+                            FIPS >= "01000000000" & FIPS <= "48999999999" ~ 48,
+                            FIPS >= "01000000000" & FIPS <= "49999999999" ~ 49,
+                            FIPS >= "01000000000" & FIPS <= "50999999999" ~ 50,
+                            FIPS >= "01000000000" & FIPS <= "51999999999" ~ 51,
+                            FIPS >= "01000000000" & FIPS <= "53999999999" ~ 53,
+                            FIPS >= "01000000000" & FIPS <= "54999999999" ~ 54,
+                            FIPS >= "01000000000" & FIPS <= "55999999999" ~ 55,
+                            FIPS >= "01000000000" & FIPS <= "56999999999" ~ 56,
+                              TRUE ~ 0))
+  
+## Creating Yes/No Has EVCS Variable
+
+poly_CRS <- st_crs(acs_data)
+  points = st_as_sf(evcs, coords = c("Longitude", "Latitude"), crs = poly_CRS)
+  free_points = st_as_sf(free_evcs, coords = c("Longitude", "Latitude"), crs = poly_CRS)
+  
+acs_data <- acs_data %>%
+  mutate(num_EVCS = lengths(st_covers(acs_data, points)),
+         num_free_EVCS = lengths(st_covers(acs_data, free_points))) %>%
+  mutate(has_EVCS = num_EVCS > 0,
+         has_free_EVCS = num_free_EVCS > 0)
+```
+
+## Political Data
+
+Loading political variables.
+Gov = political party of sitting Governor in 2017 
+    - Dem, GOP, IND
+StateSen = political party holding a majority in the State Senate in 2017
+StateHouse = political party holding a majority in the State House in 2017
+Leg = political party holding a majority in both chambers of the State Legislature in 2017
+    - Dem, GOP, Split 
+
+(note: Nebraska's state legislature is unicameral, StateSen and StateHouse are listed as 'NA'; all variables are listed as 'NA' for DC as the governance structure is not comparable to that of a state)
+
+```{r}
+poli_vars <- read_csv("Station_Data/political_var.csv") %>%
+                  select(states, statename, StateAbb, Gov, StateSen, StateHouse, Leg)
+
+## Merging Political Variables into ACS Data
+
+acs_data <- acs_data %>%
+  left_join(poli_vars)
+```
+
+
+## Creating Density Variable
+
+##acs_data <- acs_data %>%
+## mutate(density = sum(c(Race_BlackNH, Race_IndigenousNH, Race_AsianNH, Race_PacIslNH, Race_Hispanic)))
+
+## Air Quality Data
+
+
+# Regression
+
+```{r three-IV regression}
+model1 <- glm(has_EVCS ~ MedInc + percent_white + percent_black + percent_asian + percent_indig + 
+                percent_pacisl + percent_hispanic + percent_caralone + percent_pubtransit + 
+                percent_wfh + Gov + Leg,
+              data = acs_data)
+
+summary(model1)
+```
+
+## Log Income
+
+```{r three-IV regression}
+model2 <- glm(has_EVCS ~ log(MedInc) + percent_white + percent_black + percent_asian + percent_indig + 
+                percent_pacisl + percent_hispanic + percent_caralone + percent_pubtransit + 
+                percent_wfh + Gov + Leg,
+              data = acs_data)
+
+summary(model2)
+```
+
+## Regression with Interactions
+
+```{r interaction regression}
+model3 <- glm(has_EVCS ~ log(MedInc) + percent_white + percent_black + percent_asian + percent_indig + 
+                percent_pacisl + percent_hispanic + percent_caralone + percent_pubtransit + 
+                percent_wfh + Gov + Leg +
+                percent_white:Gov +
+                percent_white:Leg +
+                log(MedInc):Gov +
+                log(MedInc):Leg,
+              data = acs_data)
+
+summary(model3)
+```
+
+## Result Table
+
+```{r results summary}
+coef_names <- c("Median Income (log-transformed)" = "log(MedInc)", 
+                "Percentage of Population: White (Non-Hispanic)" = "percent_white",
+                "Percentage of Population: Black (Non-Hispanic)" = "percent_black",
+                "Percentage of Population: Asian (Non-Hispanic)" = "percent_asian",
+                "Percentage of Population: Indigenous (Non-Hispanic)" = "percent_indig",
+                "Percentage of Population: Pacific Islander (Non-Hispanic)" = "percent_pacisl",
+                "Percentage of Population: Hispanic" = "percent_hispanic",
+                "Percentage of Workers: Drove Alone" = "percent_caralone",
+                "Percentage of Workers: Public Transit" = "percent_pubtransit",
+                "Percentage of Workers: Work From Home" = "percent_wfh",
+                "Republican Governor" = "GovGOP",
+                "Independent Governor" = "GovInd",
+                "Republican Legislature" = "LegGOP",
+                "Split Legislature" = "LegSplit",
+                "Interaction: Percentage White and Republican Governor" = "percent_white:GovGOP",
+                "Interaction: Percentage White and Independent Governor" = "percent_white:GovInd",
+                "Interaction: Percentage White and Republican Legislature" = "percent_white:LegGOP",
+                "Interaction: Percentage White and Split Legislature" = "percent_white:LegSplit",
+                "Interaction: Median Income (log) and Republican Governor" = "log(MedInc):GovGOP",
+                "Interaction: Median Income (log) and Independent Governor" = "log(MedInc):GovInd",
+                "Interaction: Median Income (log) and Republican Legislature" = "log(MedInc):LegGOP",
+                "Interaction: Median Income (log) and Split Legislature" = "log(MedInc):LegSplit",
+                "Constant" = "(Intercept)")
+
+
+export_summs(model1, model2, model3, coefs = coef_names)
+```

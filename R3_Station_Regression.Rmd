@@ -1,0 +1,246 @@
+---
+title: "R3_Station_DescriptiveStats"
+author: "Carlee Griffeth"
+date: "2/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setting Up
+
+## Loading Libraries
+
+*Note: there may be unecessaary libraries in this list; this has become a running list of libraries I've added to try different functions that I've found online so some may not actually be needed.
+
+```{r load libraries, message=FALSE}
+library(tidyverse)
+library(tidycensus)
+library(purrr)
+library(survey)
+library(srvyr)
+library(knitr)
+library(jtools)
+library(sf)
+library(sp)
+library(units)
+library(nngeo)
+library(leaflet)
+library(tigris)
+library(reshape2)
+library(httr)
+library(jsonlite)
+library(rgdal)
+library(maps)
+library(mapdata)
+library(dplyr)
+library(ggplot2)
+library(cartogram)
+library(ggspatial)
+library(ggthemes)
+library(rnaturalearth)
+library("ggthemes")
+library("mapproj")
+library("ggspatial")
+
+census_api_key("84fd7c10ce8fd8c15d8852fd68abaa8790f1c29d")
+options(tigris_use_cache = TRUE)
+```
+
+# Loading & Cleaning Data
+
+## EVCS Dataset
+
+Manually downaloaded and read into r.
+
+Electric vehicle charging station data is pulled from the US Department of Energy Alternative Fuels Data Center's Alternative Fueling Station Locator at https://afdc.energy.gov/stations/#/analyze?country=US&fuel=ELEC&ev_levels=all&access=public&access=private
+
+Filtered for download by:
+1. Location: United States -- all states/territories
+2. Fuel: Electric -- all charger types, all connectors, all networks selected
+3. Station: 
+    - public and private access; 
+    - status: available; 
+    - owner: all; 
+    - payment: all
+
+```{r loading datasets}
+evcs <- read_csv("Station_Data/evcs.csv") %>%
+                  select(Station_Name, Street_Address, City, StateAbb, ZIP, 
+                         Access_Days_Time, EV_Network, Latitude, Longitude, 
+                         Owner_Type_Code, Access_Code, EV_Pricing, EV_Connector) %>%
+                  mutate(access_time = case_when(Access_Days_Time == "24 hours daily" ~ "24 hours daily",
+                                            Access_Days_Time == "24 hours" ~ "24 hours",
+                                            Access_Days_Time == "MON: 24 hours | TUE: 24 hours | WED: 24 hours | THU: 24 hours | FRI: 24 hours | SAT: 24 hours | SUN: 24 hours" ~ "24 hours daily", 
+                                            Access_Days_Time == "MO: 12:00am-12:00am; TU: 12:00am-12:00am; WE: 12:00am-12:00am; TH: 12:00am-12:00am; FR: 12:00am-12:00am; SA: 12:00am-12:00am; SU: 12:00am-12:00am" ~ "24 hours daily",
+                                            TRUE ~ "Not 24 hours daily")) %>%
+                  mutate(ownership = case_when(Owner_Type_Code == "FG" ~ "Federal Government",
+                                               Owner_Type_Code == "J" ~ "Joint",
+                                               Owner_Type_Code == "LG" ~ "Local Government",
+                                               Owner_Type_Code == "P" ~ "aPrivate",
+                                               Owner_Type_Code == "SG" ~ "State Government",
+                                               Owner_Type_Code == "T" ~ "Utility",
+                                               TRUE ~ "Blank",
+                                               FALSE ~ "None")) %>%
+                  mutate(access_type = case_when(Access_Code == "public" ~ "Public Accessiblity",
+                                               Access_Code == "private" ~ "Private Accessibility",
+                                               TRUE ~ "zBlank",
+                                               FALSE ~ "None")) %>%
+                  mutate(freepay = case_when(EV_Pricing == "Free" ~ "Free",
+                                             EV_Pricing == "FREE" ~ "Free",
+                                             TRUE ~ "Pay",
+                                             FALSE ~ "Pay")) %>%
+select(Station_Name, Street_Address, City, StateAbb, ZIP, access_time, EV_Network, Latitude, Longitude, ownership, access_type, freepay, EV_Connector)
+
+# Loading ACS Data
+
+us <- unique(fips_codes$state)[1:51]
+
+acs_data <- map_df(us, function(x) {
+                  get_acs(geography ="tract",
+                          geometry = TRUE,
+                          variables = c("B01003_001", "B25001_001", "B25003_001", "B25003_002", 
+                                        "B25003_003", "B03002_003", "B03002_004", "B03002_005",
+                                        "B03002_006", "B03002_007", "B03002_012", "B08301_001", 
+                                        "B08301_003", "B08301_010", "B08301_021", "B19013_001"),
+                          output = "wide",
+                          state = x,
+                          year = 2017)})
+
+colnames(acs_data) <- c("GEOID", "NAME", "Tot_Pop", "Tot_Pop_MOE", "Tot_HU", "Tot_HU_MOE", "Tot_HU_Occ", "Tot_HU_Occ_MOE",
+                        "Tot_HU_OwnOcc", "Tot_HU_OwnOcc_MOE", "Tot_HU_RentOcc", "Tot_HU_RentOcc_MOE", "Race_WhiteNH", "Race_WhiteNH_MOE",
+                        "Race_BlackNH", "Race_BlackNH_MOE", "Race_IndigenousNH", "Race_IndigenousNH_MOE", "Race_AsianNH", "Race_AsianNH_MOE", 
+                        "Race_PacIslNH", "Race_PacIslNH_MOE", "Race_Hispanic", "Race_Hispanic_MOE", "Mode_Total", "Mode_Total_MOE", 
+                        "Mode_CarAlone", "Mode_CarAlone_MOE", "Mode_PubTransit", "Mode_PubTransit_MOE", "Mode_WFH", "Mode_WFH_MOE", 
+                        "MedInc", "MedInc_MOE", "geometry")
+
+acs_data <- acs_data %>%
+  mutate(acs_data, percent_white = (Race_WhiteNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_black = (Race_BlackNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_indig = (Race_IndigenousNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_asian = (Race_AsianNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_pacisl = (Race_PacIslNH / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_hispanic = (Race_Hispanic / Tot_Pop)*100) %>%
+  mutate(acs_data, percent_caralone = (Mode_CarAlone / Mode_Total)*100) %>%
+  mutate(acs_data, percent_pubtransit = (Mode_PubTransit / Mode_Total)*100) %>%
+  mutate(acs_data, percent_wfh = (Mode_WFH / Mode_Total)*100)
+
+# Loading Political Variables
+
+poli_vars <- read_csv("Station_Data/political_var.csv") %>%
+                  select(states, statename, StateAbb, Gov, StateSen, StateHouse, Leg)
+
+## Merging ACS Variables into EVCS Data
+
+poly_CRS <- st_crs(acs_data)
+  evcs_points = st_as_sf(evcs, coords = c("Longitude", "Latitude"), crs = poly_CRS)
+
+# Creating Binary T/F Free EVCS Variable & Joining ACS and Political Variables into EVCS Data
+
+evcs_points <- evcs_points %>%
+  select(Station_Name, Street_Address, City, StateAbb, ZIP, access_time, EV_Network, ownership, access_type, freepay, EV_Connector) %>%
+  mutate(free = case_when(freepay == "Free" ~ "True",
+                         TRUE ~ "False")) %>%
+  mutate(public = case_when(access_type == "Public Accessiblity" ~ "True",
+                            TRUE ~ "False")) %>%
+  mutate(time = case_when(access_time == "Not 24 hours daily" ~ "False",
+                           access_time != "Not 24 hours daily" ~ "True")) %>%
+  mutate(free_evcs = free == "True" & public == "True" & time == "True") %>%
+  st_join(acs_data) %>%
+  left_join(poli_vars)
+```
+
+```{r}
+model1 <- glm(free_evcs ~ ownership + MedInc + percent_white + percent_black + percent_asian + percent_indig + 
+                percent_pacisl + percent_hispanic + percent_caralone + percent_pubtransit + 
+                percent_wfh + Gov + Leg, 
+              data = evcs_points)
+
+summary(model1)
+```
+
+```{r log}
+model2 <- glm(free_evcs ~ ownership + log(MedInc) + percent_white + percent_black + percent_asian + percent_indig + 
+                percent_pacisl + percent_hispanic + percent_caralone + percent_pubtransit + 
+                percent_wfh + Gov + Leg, 
+              data = evcs_points)
+
+summary(model2)
+```
+
+
+```{r interactions}
+model3 <- glm(free_evcs ~ ownership + log(MedInc) + percent_white + percent_black + percent_asian + percent_indig + 
+                percent_pacisl + percent_hispanic + percent_caralone + percent_pubtransit + 
+                percent_wfh + Gov + Leg, 
+                percent_white:Gov +
+                percent_white:Leg +
+                log(MedInc):Gov +
+                log(MedInc):Leg +
+                ownership:Gov +
+                ownership:Leg,
+              data = evcs_points)
+
+summary(model3)
+```
+
+## Result Table
+
+```{r results summary}
+coef_names <- c("No Ownership Data" = "ownershipBlank", 
+                "Federal Ownership" = "ownershipFederal Government", 
+                "Joint Ownership" = "ownershipJoint",
+                "Local Ownership" = "ownershipLocal Government",
+                "State Ownership" = "ownershipState Government",
+                "Utility Ownership" = "ownershipUtility",
+                "Median Income (log-transformed)" = "log(MedInc)", 
+                "Percentage of Population: White (Non-Hispanic)" = "percent_white",
+                "Percentage of Population: Black (Non-Hispanic)" = "percent_black",
+                "Percentage of Population: Asian (Non-Hispanic)" = "percent_asian",
+                "Percentage of Population: Indigenous (Non-Hispanic)" = "percent_indig",
+                "Percentage of Population: Pacific Islander (Non-Hispanic)" = "percent_pacisl",
+                "Percentage of Population: Hispanic" = "percent_hispanic",
+                "Percentage of Workers: Drove Alone" = "percent_caralone",
+                "Percentage of Workers: Public Transit" = "percent_pubtransit",
+                "Percentage of Workers: Work From Home" = "percent_wfh",
+                "Republican Governor" = "GovGOP",
+                "Independent Governor" = "GovInd",
+                "Republican Legislature" = "LegGOP",
+                "Split Legislature" = "LegSplit",
+                "Interaction: Percentage White and Republican Governor" = "percent_white:GovGOP",
+                "Interaction: Percentage White and Independent Governor" = "percent_white:GovInd",
+                "Interaction: Percentage White and Republican Legislature" = "percent_white:LegGOP",
+                "Interaction: Percentage White and Split Legislature" = "percent_white:LegSplit",
+                "Interaction: Median Income (log) and Republican Governor" = "log(MedInc):GovGOP",
+                "Interaction: Median Income (log) and Independent Governor" = "log(MedInc):GovInd",
+                "Interaction: Median Income (log) and Republican Legislature" = "log(MedInc):LegGOP",
+                "Interaction: Median Income (log) and Split Legislature" = "log(MedInc):LegSplit",
+                "Interaction: Blank Ownership and Republic Governor" = "ownershipBlank:GovGOP",
+                "Interaction: Federal Ownership and Republic Governor" = "ownershipFederal Government:GovGOP", 
+                "Interaction: Joint Ownership and Republic Governor" = "ownershipJoint:GovGOP",
+                "Interaction: Local Ownership and Republic Governor" = "ownershipLocal Government:GovGOP",
+                "Interaction: State Ownership and Republic Governor" = "ownershipState Government:GovGOP",
+                "Interaction: Utility Ownership and Republic Governor" = "ownershipUtility:GovGOP",
+                "Interaction: Blank Ownership and Independent Governor" = "ownershipBlank:GovInd",
+                "Interaction: Federal Ownership and Independent Governor" = "ownershipFederal Government:GovInd",
+                "Interaction: Joint Ownership and Independent Governor" = "ownershipJoint:GovInd",
+                "Interaction: Local Ownership and Independent Governor" = "ownershipLocal Government:GovInd",
+                "Interaction: State Ownership and Independent Governor" = "ownershipState Government:GovInd",
+                "Interaction: Utility Ownership and Independent Governor" = "ownershipUtility:GovInd",
+                "Interaction: Blank Ownership and Republican Legislature" = "ownershipBlank:LegGOP",
+                "Interaction: Federal Ownership and Republican Legislature" = "ownershipFederal Government:LegGOP",
+                "Interaction: Joint Ownership and Republican Legislature" = "ownershipJoint:LegGOP",
+                "Interaction: Local Ownership and Republican Legislature" = "ownershipLocal Government:LegGOP",
+                "Interaction: State Ownership and Republican Legislature" = "ownershipState Government:LegGOP",
+                "Interaction: Utility Ownership and Republican Legislature" = "ownershipUtility:LegGOP",
+                "Interaction: Blank Ownership and Split Legislature" = "ownershipBlank:LegSplit",
+                "Interaction: Federal Ownership and Split Legislature" = "ownershipFederal Government:LegSplit",
+                "Interaction: Local Ownership and Split Legislature" = "ownershipLocal Government:LegSplit",
+                "Interaction: State Ownership and Split Legislature" = "ownershipState Government:LegSplit",
+                "Interaction: Utility Ownership and Split Legislature" = "ownershipUtility:LegSplit",
+                "Constant" = "(Intercept)")
+
+export_summs(model1, model2, model3, coefs = coef_names)
+```

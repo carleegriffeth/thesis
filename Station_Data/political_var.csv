@@ -1,0 +1,52 @@
+﻿states,statename,StateAbb,Gov,StateSen,StateHouse,Leg,LawEmissionExempt,LawFinIncentive,LawOtherIncentive,LawFee
+1,Alabama,AL,GOP,GOP,GOP,GOP,No,No,No,No
+2,Alaska,AK,Ind,GOP,GOP,GOP,No,No,No,No
+4,Arizona,AZ,GOP,GOP,GOP,GOP,No,No,No,No
+5,Arkansas,AR,GOP,GOP,GOP,GOP,No,No,No,No
+6,California,CA,Dem,Dem,Dem,Dem,No,Yes,No,No
+8,Colorado,CO,Dem,GOP,Dem,Split,Yes,Yes,No,No
+9,Connecticut,CT,Dem,Dem,Dem,Dem,Yes,No,No,No
+11,"Washington, D.C.",DC,NA,NA,NA,NA,No,No,No,No
+10,Delaware,DE,Dem,Dem,Dem,Dem,No,No,No,No
+12,Florida,FL,GOP,GOP,GOP,GOP,No,No,No,No
+13,Georgia,GA,GOP,GOP,GOP,GOP,No,No,No,No
+15,Hawaii,HI,Dem,Dem,Dem,Dem,No,No,No,No
+16,Idaho,ID,GOP,GOP,GOP,GOP,No,No,No,No
+17,Illinois,IL,GOP,Dem,Dem,Dem,Yes,No,No,No
+18,Indiana,IN,GOP,GOP,GOP,GOP,No,No,No,No
+19,Iowa,IA,GOP,GOP,GOP,GOP,No,No,No,No
+20,Kansas,KS,GOP,GOP,GOP,GOP,No,No,No,No
+21,Kentucky,KY,GOP,GOP,GOP,GOP,No,No,No,No
+22,Louisiana,LA,Dem,GOP,GOP,GOP,No,Yes,No,No
+23,Maine,ME,GOP,GOP,Dem,Split,No,No,No,No
+24,Maryland,MD,GOP,Dem,Dem,Dem,Yes,No,No,No
+25,Massachusetts,MA,GOP,GOP,GOP,GOP,Yes,No,No,No
+26,Michigan,MI,GOP,GOP,GOP,GOP,No,No,No,No
+27,Minnesota,MN,Dem,GOP,GOP,GOP,No,No,No,Yes
+28,Mississippi,MS,GOP,GOP,GOP,GOP,Yes,No,No,No
+29,Missouri,MO,GOP,GOP,GOP,GOP,No,No,No,No
+30,Montana,MT,Dem,GOP,GOP,GOP,No,No,No,No
+31,Nebraska,NE,GOP,GOP,GOP,GOP,No,Yes,No,No
+32,Nevada,NV,GOP,Dem,Dem,Dem,No,No,Yes,No
+33,New Hampshire,NH,GOP,GOP,GOP,GOP,No,No,No,No
+34,New Jersey,NJ,GOP,Dem,Dem,Dem,No,Yes,No,No
+35,New Mexico,NM,GOP,Dem,Dem,Dem,No,No,No,No
+36,New York,NY,Dem,Dem,Dem,Dem,Yes,No,No,No
+37,North Carolina,NC,Dem,GOP,GOP,GOP,No,No,Yes,Yes
+38,North Dakota,ND,GOP,GOP,GOP,GOP,No,No,No,No
+39,Ohio,OH,GOP,GOP,GOP,GOP,No,No,No,No
+40,Oklahoma,OK,GOP,GOP,GOP,GOP,No,No,Yes,No
+41,Oregon,OR,Dem,Dem,Dem,Dem,No,No,No,No
+42,Pennsylvania,PA,Dem,GOP,GOP,GOP,No,No,No,No
+44,Rhode Island,RI,Dem,Dem,Dem,Dem,Yes,No,No,No
+45,South Carolina,SC,GOP,GOP,GOP,GOP,No,No,No,No
+46,South Dakota,SD,GOP,GOP,GOP,GOP,No,No,No,No
+47,Tennessee,TN,GOP,GOP,GOP,GOP,No,No,No,Yes
+48,Texas,TX,GOP,GOP,GOP,GOP,No,Yes,No,No
+49,Utah,UT,GOP,GOP,GOP,GOP,No,No,No,No
+50,Vermont,VT,GOP,Dem,Dem,Dem,No,No,No,No
+51,Virginia,VA,Dem,GOP,GOP,GOP,No,No,No,No
+53,Washington,WA,Dem,Dem,Dem,Dem,No,No,No,No
+54,West Virginia,WV,GOP,GOP,GOP,GOP,No,No,No,No
+55,Wisconsin,WI,GOP,GOP,GOP,GOP,No,No,No,No
+56,Wyoming,WY,GOP,GOP,GOP,GOP,No,No,No,No

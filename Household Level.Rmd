@@ -1,0 +1,894 @@
+---
+title: "Household Level File"
+author: "Carlee Griffeth"
+date: "3/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load libraries, message=FALSE}
+library(tidyverse)
+library(survey)
+library(srvyr)
+library(treemapify)
+library(knitr)
+library(jtools)
+library(qqman)
+library(ggplot2)
+library(hrbrthemes)
+library(tidyverse)
+library(survey)
+library(srvyr)
+library(treemapify)
+library(knitr)
+library(jtools)
+library(interactions)
+```
+
+# Setting Up
+
+```{r loading dataset}
+read_csv("NHTS_data/vehpub.csv")
+read_csv("NHTS_data/perpub.csv")
+read_csv("NHTS_data/hhpub.csv")
+```
+
+# Loading NHTS Data
+
+## Household file
+
+HOUSEID: Household Identifier
+HHVEHCNT: Count of Household vehicles
+HHSTATE: Household state
+HHFAMINC: Household income
+HOMEOWN: Home Ownership
+
+RAIL: MSA heavy rail status for household (current transit access)
+WALK: Frequency of Walking for Travel (walkability)
+TRAIN: Frequency of Train Use for Travel (proxy for quality of current transit service)
+HBHUR: Urban / Rural indicator - Block group (where transit isn't but could be)
+  • Urban: areas with population density scores (based on density
+          centiles) mostly between 75 and 99. They include both the downtowns of major cities
+          and surrounding neighborhoods. Households within this classification live within the
+          classic high-density neighborhoods found in the heart of America’s largest cities. While
+          almost always anchored by the downtown central business district, these areas often
+          extend beyond city limits and into surrounding jurisdictions to encompass most of
+          America’s earliest suburban expansions.
+  • Second City: are  areas less-densely populated than urban areas,
+          with population density scores typically between 40 and 90. While similar to suburban
+          areas in their densities, second cities are the population centers of their surrounding
+          communities. As such, many are concentrated within America’s larger towns and
+          smaller cities. This class also includes thousands of satellite cities, which are
+          higher-density suburbs encircling major metropolitan centers, typically with far greater
+          affluence than their small city cousins.
+  • Suburban: areas with population density scores between 40 and 90,
+          and are tied closely to urban areas or second cities. Unlike second cities (defined
+          below), suburban areas are not the population center of their surrounding community,
+          but rather a continuation of the density decline from the city center. While some suburbs
+          may be employment centers, their lifestyles and commuting patterns will be more tied to
+          one another, or to the urban or second city core, than within themselves.
+  • Small Town & Rural: contain households that are classified with one of those two
+          urbanicity classifications. The population density scores where they are found range
+          from 0 to 40. This category includes exurbs, towns, farming communities, and a wide
+          range of other rural areas. The town aspect of this class covers the thousands of small
+          towns and villages scattered throughout the rural heartland, as well as the low-density
+          areas far beyond the outer beltways and suburban rings of America’s major metros.
+          Households in the exurban segments have slightly higher densities and are more
+          affluent than their rural neighbors.
+      https://nhts.ornl.gov/assets/Assessing_the_Role_of_Urbanicity.pdf
+
+```{r load hh data, message=FALSE}
+hhs <- read_csv("NHTS_data/hhpub.csv") %>%
+  select(HOUSEID, HHVEHCNT, HHSTATE, HHFAMINC, HOMEOWN, RAIL, WALK, TRAIN, HBHUR, WTHHFIN) %>%
+  mutate(has_veh = HHVEHCNT > 0) %>%
+  mutate(income_k = case_when(HHFAMINC == "01" ~ 5,
+                              HHFAMINC == "02" ~ 12.5,
+                              HHFAMINC == "03" ~ 20,
+                              HHFAMINC == "04" ~ 30,
+                              HHFAMINC == "05" ~ 42.5,
+                              HHFAMINC == "06" ~ 62.5,
+                              HHFAMINC == "07" ~ 87.5,
+                              HHFAMINC == "08" ~ 112.5,
+                              HHFAMINC == "09" ~ 137.5,
+                              HHFAMINC == "10" ~ 175,
+                              HHFAMINC == "11" ~ 250,
+                              TRUE ~ -1)) %>%
+  mutate(homeown = case_when(HOMEOWN == "01" ~ "Own",
+                             HOMEOWN == "02" ~ "Rent",
+                             TRUE ~ "zOther")) %>%
+  mutate(rail_access = case_when(RAIL == "01" ~ "Has Rail",
+                          RAIL == "02" ~ "No Rail",
+                          TRUE ~ "zOther")) %>%
+  mutate(walks = case_when(WALK == "01" ~ "Always Walks",
+                             WALK == "02" ~ "Sometimes Walks",
+                             WALK == "03" ~ "Sometimes Walks",
+                             WALK == "04" ~ "Sometimes Walks",
+                             WALK == "05" ~ "Never Walk",
+                             TRUE ~ "zOther")) %>%
+  mutate(trains = case_when(TRAIN == "01" ~ "Always Trains",
+                             TRAIN == "02" ~ "Sometimes Trains",
+                             TRAIN == "03" ~ "Sometimes Trains",
+                             TRAIN == "04" ~ "Sometimes Trains",
+                             TRAIN == "05" ~ "Never Walk",
+                             TRUE ~ "zOther")) %>%
+  mutate(density = case_when(HBHUR == "C" ~ "Second City",
+                             HBHUR == "R" ~ "Rural",
+                             HBHUR == "S" ~ "Suburban",
+                             HBHUR == "T" ~ "Small Town",
+                             HBHUR == "U" ~ "Urban",
+                             TRUE ~ "zOther")) %>%
+  select(HOUSEID, has_veh, HHSTATE, income_k, homeown, rail_access, walks, trains, density, WTHHFIN)
+```
+
+## Vehicle File
+
+HOUSEID: Household Identifier
+HFUEL: Type of Hybrid Vehicle (03 = EV)
+
+```{r load vehicle data, message=FALSE}
+vehs <- read_csv("NHTS_data/vehpub.csv") %>%
+  select(HOUSEID, HH_HISP, HH_RACE, FUELTYPE, HFUEL, WTHHFIN) %>%
+  mutate(race_eth = factor(case_when(HH_HISP == "01" ~ "Hispanic",
+                              HH_RACE == "01" ~ "NH_white",
+                              HH_RACE == "02" ~ "NH_Black",
+                              HH_RACE == "03" ~ "NH_Asian",
+                              TRUE ~ "Other"),
+                           levels = c("NH_white",
+                                      "NH_Black",
+                                      "NH_Asian",
+                                      "Hispanic",
+                                      "Other"))) %>%
+  mutate(type = case_when(FUELTYPE == "01" ~ "Gas",
+                          FUELTYPE == "02" ~ "Diesel",
+                          HFUEL == "01" ~ "Biodiesel",
+                          HFUEL == "02" ~ "Plug-in hybrid",
+                          HFUEL == "03" ~ "Fully electric",
+                          HFUEL == "04" ~ "Hybrid",
+                          TRUE ~ "Other")) %>%
+  mutate(is_ev = HFUEL == "03") %>%
+  group_by(HOUSEID) %>%
+  summarize(has_ev = max(is_ev))
+```
+
+### Merge Veh into HH
+
+```{r}
+hhs <- hhs %>%
+  left_join(vehs)
+```
+
+## Person File 
+
+HOUSEID: Household Identifier
+R_RACE: Respondent Race (01 = white)
+R_HISP: No, Not Hispanic or Latino
+CONDPUB: Medical Condition Results in Using Bus or Subway Less Frequently
+
+```{r load person data, message=FALSE}
+ppl <- read_csv("NHTS_data/perpub.csv") %>%
+  select(HOUSEID, R_RACE, R_HISP, WRKTRANS, WRK_HOME, NOCONG, TIMETOWK, WTPERFIN) %>%
+  mutate(is_nh_white = (R_RACE == "01" & R_HISP == "02")) %>%
+  mutate(modeshare = case_when(WRKTRANS == "01" ~ "Walk",
+                              WRKTRANS == "02" ~ "Bike",
+                              WRKTRANS == "03" ~ "Car",
+                              WRKTRANS == "04" ~ "SUV",
+                              WRKTRANS == "05" ~ "Van",
+                              WRKTRANS == "06" ~ "Pickup Truck",
+                              WRKTRANS == "07" ~ "Golfcart / Segway",
+                              WRKTRANS == "08" ~ "Motorcycle / Moped",
+                              WRKTRANS == "09" ~ "RV, motor home, ATV, snowmobile",
+                              WRKTRANS == "10" ~ "School bus",
+                              WRKTRANS == "11" ~ "Public or commuter bus",
+                              WRKTRANS == "12" ~ "Paratransit / Dial-a-ride",
+                              WRKTRANS == "13" ~ "Private / Charter / Tour / Shuttle bus",
+                              WRKTRANS == "14" ~ "City-to-city bus (Greyhound, Megabus)",
+                              WRKTRANS == "15" ~ "Amtrak / Commuter rail",
+                              WRKTRANS == "16" ~ "Subway / Elevated / Light rail / Street car",
+                              WRKTRANS == "17" ~ "Taxi / Limo (including Uber / Lyft)",
+                              WRKTRANS == "18" ~ "Rental car (including Zipcar / Car2Go)",
+                              WRKTRANS == "19" ~ "Airplane",
+                              WRKTRANS == "20" ~ "Boat / Ferry / Water taxi",
+                              TRUE ~ "Other")) %>%
+  mutate(pubtransit = case_when(WRKTRANS == "11" ~ "Public Transit",
+                               WRKTRANS == "16" ~ "Public Transit",
+                               WRKTRANS == "20" ~ "Public Transit",
+                               TRUE ~ "Not Public Transit")) %>%
+  mutate(wfh = case_when(WRK_HOME == "01" ~ "Yes",
+                         WRK_HOME == "02" ~ "No",
+                         TRUE ~ "Other")) %>%
+select(HOUSEID, modeshare, is_nh_white, pubtransit, wfh) %>%
+group_by(HOUSEID)
+
+bipoc <- ppl %>%
+  summarize(has_BIPOC = !as.logical(min(is_nh_white))) 
+```
+
+### Merge Person into HH
+
+```{r}
+hhs <- hhs %>%
+  left_join(ppl)
+
+hhs <- hhs %>%
+  left_join(bipoc)
+```
+
+## Applying Survey Weights
+
+```{r Create survey}
+hhs_svy <- hhs %>%
+  as_survey(HOUSEID, weight = WTHHFIN)
+```
+
+# Descriptive Statistics
+
+## Car Type
+
+### Car Type Table
+
+```{r ev shares}
+ev_shares_list <- svytable(~type, hhs_svy)
+
+ev_shares_tibble <- tibble(`Type of vehicle` = 
+                             factor(names(ev_shares_list),
+                                    levels = c("Gas",
+                                               "Diesel",
+                                               "Biodiesel",
+                                               "Hybrid",
+                                               "Plug-in hybrid",
+                                               "Fully electric",
+                                               "Other")), 
+                           `Number of vehicles` = as.numeric(round(ev_shares_list,0)),
+                           `Percent of total` = paste(round((ev_shares_list / sum(ev_shares_list)) * 100, 2), "%", sep = "")) %>%
+ 
+   arrange(`Type of vehicle`)
+
+  kable(ev_shares_tibble, 
+       format.args = list(big.mark = ","),
+       align = "lrc")
+
+```
+
+### Car Type GGPlot
+
+```{r}
+ggplot(ev_shares_tibble, aes(area = `Number of vehicles`, 
+                             fill = `Type of vehicle`)) +
+  
+  geom_treemap(color = "transparent") +
+  
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "gray55",
+                               "#9c406d",
+                               "#a19f9c",
+                               "#dac17b",
+                               "#B9CAC4"))
+
+```
+
+#### Save Car Type GGPlot
+
+```{r}
+ggsave(
+  filename = "vehicle type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+## Income 
+
+### Income Table
+
+```{r, warning=FALSE}
+income_summary <- hhs_svy %>%
+  group_by(type) %>%
+  summarize(mean_inc = survey_mean(income_k),
+            med_inc = survey_quantile(income_k, 0.5)) %>%
+  mutate(type = factor(type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  arrange(type)
+
+colnames(income_summary) <- c("Type of vehicle",
+                    "Average owner's household income (thousands)",
+                    "Standard error of average",
+                    "Median owner's household income (thousands)",
+                    "Standard error of median")
+
+kable(income_summary, align = "lrrrr", digits = 1)
+```
+
+### Income ggplot
+
+```{r}
+ggplot(income_summary, aes(x = `Type of vehicle`,
+      y = `Average owner's household income (thousands)`,
+      fill = `Type of vehicle`)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+```
+
+#### Save Income ggplot
+
+```{r}
+ggsave(
+  filename = "income.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+## Race
+
+### Race by Type Table
+
+```{r, warning=FALSE}
+race_shares_list <- svytable(~race_eth+type, hhs_svy)
+
+race_shares_tibble <- tibble(
+  `Race/ethnicity` = factor(c(names(race_shares_list[,1]), "Total"),
+                       levels = c("NH_white",
+                                  "NH_Black",
+                                  "NH_Asian",
+                                  "Hispanic",
+                                  "Other",
+                                  "Total")), 
+   Gas = c(round((race_shares_list[,"Gas"] / 
+                              sum(race_shares_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((race_shares_list[,"Diesel"] / 
+                        sum(race_shares_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((race_shares_list[,"Biodiesel"] / 
+                        sum(race_shares_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((race_shares_list[,"Hybrid"] / 
+                        sum(race_shares_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((race_shares_list[,"Plug-in hybrid"] / 
+                          sum(race_shares_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((race_shares_list[,"Fully electric"] / 
+                          sum(race_shares_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((race_shares_list[,"Other"] / 
+                          sum(race_shares_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Race/ethnicity`)
+
+kable(race_shares_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by race and type")
+```
+
+### Race by Type ggplot
+
+```{r}
+race_shares_tibble %>%
+  filter(`Race/ethnicity` != "Total") %>%
+  pivot_longer(cols = -`Race/ethnicity`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Race/ethnicity`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual", 
+                    labels = c("Non-Hispanic white",
+                               "Non-Hispanic Black",
+                               "Non-Hispanic Asian",
+                               "Hispanic",
+                               "Other")) +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by household race/ethnicity",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+#### Save Race by Type ggplot
+
+```{r}
+ggsave(
+  filename = "race by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+### Car Type by Race Table
+
+```{r, warning=FALSE}
+race_shares_tibble2 <- tibble(
+  `Vehicle type` = factor(c(names(race_shares_list[1,]), "Total"),
+                          levels = c("Gas",
+                                     "Diesel",
+                                     "Biodiesel",
+                                     "Hybrid",
+                                     "Plug-in hybrid",
+                                     "Fully electric",
+                                     "Other",
+                                     "Total")), 
+  `Non-Hispanic white` = c(round((race_shares_list["NH_white",] / 
+                        sum(race_shares_list["NH_white",])) * 
+                          100, 2), 100), 
+  `Non-Hispanic Black` = c(round((race_shares_list["NH_Black",] / 
+                        sum(race_shares_list["NH_Black",])) * 
+                          100, 2), 100),
+  `Non-Hispanic Asian` = c(round((race_shares_list["NH_Asian",] / 
+                        sum(race_shares_list["NH_Asian",])) * 
+                          100, 2), 100),
+  Hispanic = c(round((race_shares_list["Hispanic",] / 
+                        sum(race_shares_list["Hispanic",])) * 
+                       100, 2), 100),
+   Other = c(round((race_shares_list["Other",] / 
+                        sum(race_shares_list["Other",])) * 
+                     100, 2), 100)) %>%
+  arrange(`Vehicle type`)
+
+kable(race_shares_tibble2, digits = 1,
+      caption = "Percent of vehicles owned, by type and race")
+```
+
+### Car Type by Race ggplot
+
+```{r}
+race_shares_tibble2 %>%
+  filter(`Vehicle type` != "Total" &
+           `Vehicle type` != "Gas") %>%
+  pivot_longer(cols = -`Vehicle type`, 
+               names_to = "Race/ethnicity", values_to = "Share") %>%
+  mutate(`Race/ethnicity` = factor(`Race/ethnicity`, 
+                                   levels = c("Non-Hispanic white",
+                                              "Non-Hispanic Black",
+                                              "Non-Hispanic Asian",
+                                              "Hispanic",
+                                              "Other"))) %>%
+  ggplot(aes(x = `Race/ethnicity`, y = Share, fill = `Vehicle type`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+"Percent of vehicles by vehicle type\n(gas-powered vehicles not shown)",
+            breaks = breaks <- seq(0, 6, by = 0.5),
+            labels = paste(breaks, "%", sep = "")) +
+  scale_x_discrete(labels = c("Non-Hispanic\nwhite",
+                              "Non-Hispanic\nBlack",
+                              "Non-Hispanic\nAsian",
+                              "Hispanic",
+                              "Other"))
+```
+
+#### Save Car Type by Race ggplot
+
+```{r}
+ggsave(
+  filename = "type by race.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+## Rail Access 
+
+### Rail Access Table
+
+```{r, warning=FALSE}
+rail_list <- svytable(~rail_access+type, hhs_svy)
+
+rail_tibble <- tibble(
+  `Rail Access` = factor(c(names(rail_list[,1]), "Total"),
+                       levels = c("Has Rail",
+                                  "No Rail",
+                                  "zOther",
+                                  "Total")), 
+   Gas = c(round((rail_list[,"Gas"] / 
+                              sum(rail_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((rail_list[,"Diesel"] / 
+                        sum(rail_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((rail_list[,"Biodiesel"] / 
+                        sum(rail_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((rail_list[,"Hybrid"] / 
+                        sum(rail_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((rail_list[,"Plug-in hybrid"] / 
+                          sum(rail_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((rail_list[,"Fully electric"] / 
+                          sum(rail_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((rail_list[,"Other"] / 
+                          sum(rail_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Rail Access`)
+
+kable(rail_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by density")
+```
+
+## Walks 
+
+### Walks Table
+
+```{r, warning=FALSE}
+walks_list <- svytable(~walks+type, hhs_svy)
+
+walks_tibble <- tibble(
+  `Walks` = factor(c(names(walks_list[,1]), "Total"),
+                       levels = c("Always Walks",
+                             "Sometimes Walks",
+                             "Never Walk",
+                                  "zOther",
+                                  "Total")), 
+   Gas = c(round((walks_list[,"Gas"] / 
+                              sum(walks_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((walks_list[,"Diesel"] / 
+                        sum(walks_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((walks_list[,"Biodiesel"] / 
+                        sum(walks_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((walks_list[,"Hybrid"] / 
+                        sum(walks_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((walks_list[,"Plug-in hybrid"] / 
+                          sum(walks_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((walks_list[,"Fully electric"] / 
+                          sum(walks_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((walks_list[,"Other"] / 
+                          sum(walks_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Walks`)
+
+kable(walks_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by density")
+```
+
+## Trains
+
+### Trains Table
+
+```{r, warning=FALSE}
+trains_list <- svytable(~trains+type, hhs_svy)
+
+trains_tibble <- tibble(
+  `Trains` = factor(c(names(trains_list[,1]), "Total"),
+                       levels = c("Always Trains",
+                             "Sometimes Trains",
+                             "Never Walk",
+                                  "zOther",
+                                  "Total")), 
+   Gas = c(round((trains_list[,"Gas"] / 
+                              sum(trains_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((trains_list[,"Diesel"] / 
+                        sum(trains_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((trains_list[,"Biodiesel"] / 
+                        sum(trains_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((trains_list[,"Hybrid"] / 
+                        sum(trains_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((trains_list[,"Plug-in hybrid"] / 
+                          sum(trains_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((trains_list[,"Fully electric"] / 
+                          sum(trains_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((trains_list[,"Other"] / 
+                          sum(trains_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Trains`)
+
+kable(trains_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by density")
+```
+
+## Density
+
+### Density by Type Table
+
+```{r, warning=FALSE}
+density_list <- svytable(~hhdensity+type, hhs_svy)
+
+density_tibble <- tibble(
+  `Density` = factor(c(names(density_list[,1]), "Total"),
+                       levels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total")), 
+   Gas = c(round((density_list[,"Gas"] / 
+                              sum(density_list[,"Gas"])) * 
+                   100, 2), 100),
+   Diesel = c(round((density_list[,"Diesel"] / 
+                        sum(density_list[,"Diesel"])) * 
+                      100, 2), 100),
+   Biodiesel = c(round((density_list[,"Biodiesel"] / 
+                        sum(density_list[,"Biodiesel"])) * 
+                         100, 2), 100),
+   Hybrid = c(round((density_list[,"Hybrid"] / 
+                        sum(density_list[,"Hybrid"])) * 
+                      100, 2), 100),
+  `Plug-in hybrid` = c(round((density_list[,"Plug-in hybrid"] / 
+                          sum(density_list[,"Plug-in hybrid"])) *
+                            100, 2), 100),
+  `Fully electric` = c(round((density_list[,"Fully electric"] / 
+                          sum(density_list[,"Fully electric"])) *
+                            100, 2), 100),
+   Other = c(round((density_list[,"Other"] / 
+                          sum(density_list[,"Other"])) *
+                            100, 2), 100)) %>%
+  arrange(`Density`)
+
+kable(density_tibble, digits = 1,
+      caption = "Percent of vehicles owned, by density")
+```
+
+### Density by Type ggplot
+
+```{r}
+density_tibble %>%
+  filter(`Density` != "Total") %>%
+  pivot_longer(cols = -`Density`, 
+               names_to = "Type", values_to = "Share") %>%
+  mutate(Type = factor(Type, levels = c("Gas",
+                                        "Diesel",
+                                        "Biodiesel",
+                                        "Hybrid",
+                                        "Plug-in hybrid",
+                                        "Fully electric",
+                                        "Other"))) %>%
+  ggplot(aes(x = `Type`, y = Share, fill = `Density`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_brewer(type = "qual", 
+                    labels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total")) +
+    scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+            "Percent of vehicles by density",
+            breaks = breaks <- seq(0, 100, by = 10),
+            labels = paste(breaks, "%", sep = ""))
+```
+
+#### Save Density by Type ggplot
+
+```{r}
+ggsave(
+  filename = "density by type.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+### Car Type by Density Table
+
+```{r, warning=FALSE}
+density_tibble2 <- tibble(
+  `Vehicle type` = factor(c(names(density_list[1,]), "Total"),
+                          levels = c("Gas",
+                                     "Diesel",
+                                     "Biodiesel",
+                                     "Hybrid",
+                                     "Plug-in hybrid",
+                                     "Fully electric",
+                                     "Other",
+                                     "Total")), 
+  `Second City` = c(round((density_list["Second City",] / 
+                        sum(density_list["Second City",])) * 
+                          100, 2), 100), 
+  `Rural` = c(round((density_list["Rural",] / 
+                        sum(density_list["Rural",])) * 
+                          100, 2), 100),
+  `Suburban` = c(round((density_list["Suburban",] / 
+                        sum(density_list["Suburban",])) * 
+                          100, 2), 100),
+  `Small Town` = c(round((density_list["Small Town",] / 
+                        sum(density_list["Small Town",])) * 
+                       100, 2), 100),
+  `Urban` = c(round((density_list["Urban",] / 
+                        sum(density_list["Urban",])) * 
+                       100, 2), 100),
+   Other = c(round((density_list["Other",] / 
+                        sum(density_list["Other",])) * 
+                     100, 2), 100)) %>%
+  arrange(`Vehicle type`)
+
+kable(density_tibble2, digits = 1,
+      caption = "Percent of vehicles owned, by type and race")
+```
+
+### Car Type by Density ggplot
+
+```{r}
+density_tibble2 %>%
+  filter(`Vehicle type` != "Total" &
+           `Vehicle type` != "Gas") %>%
+  pivot_longer(cols = -`Vehicle type`, 
+               names_to = "Density", values_to = "Share") %>%
+  mutate(`Density` = factor(`Density`, 
+                                   levels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total"))) %>%
+  ggplot(aes(x = `Density`, y = Share, fill = `Vehicle type`)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("#303f39",
+                               "#559274",
+                               "#B9CAC4",
+                               "#9c406d",
+                               "#D69AB7",
+                               "#dac17b",
+                               "gray55")) +
+  scale_y_continuous(name = 
+"Percent of vehicles by vehicle type\n(gas-powered vehicles not shown)",
+            breaks = breaks <- seq(0, 6, by = 0.5),
+            labels = paste(breaks, "%", sep = "")) +
+  scale_x_discrete(labels = c("Second City",
+                                  "Rural",
+                                  "Suburban",
+                                  "Small Town",
+                                  "Urban",
+                                  "Other",
+                                  "Total"))
+```
+
+#### Save Car Type by Density ggplot
+
+```{r}
+ggsave(
+  filename = "type by density.png",
+  plot = last_plot(),
+  device = "png",
+  path = "/Users/carleegriffeth/Documents/Thesis/07 Graphics/ggplots",
+  scale = 1,
+  width = par("din")[1], 
+  height = par("din")[2], 
+  units = c("in", "cm","mm"),
+  dpi = 320,
+  limitsize = TRUE,
+)
+```
+
+# Regression
+
+```{r three-IV regression}
+model1 <- glm(has_ev ~ income_k + has_BIPOC + rail_access + walks + trains + density, 
+              data = hhs, 
+              family = "binomial")
+
+summary(model1)
+```
+
+```{r three-IV regression}
+model2 <- glm(has_ev ~ log(income_k) + has_BIPOC + rail_access + walks + trains + density, 
+              data = hhs, 
+              family = "binomial")
+
+summary(model2)
+```
+
+```{r three-IV regression}
+model3 <- glm(has_ev ~ log(income_k) + has_BIPOC + rail_access + walks + trains + density +
+                log(income_k):has_BIPOC,
+              data = hhs, 
+              family = "binomial")
+
+summary(model3)
+```
+
+## Result Table
+
+```{r results summary}
+coef_names <- c("Income (thousands)" = "income_k",
+                "Income (log-transformed)" = "log(income_k)", 
+                "Presence of BIPOC in household" = "has_BIPOCTRUE",
+                "rail_accessNo Rail" = "rail_accessNo Rail",
+                "walksNever Walk" = "walksNever Walk",
+                "walksSometimes Walk" = "walksSometimes Walks",
+                "walksOther Walk" = "walkszOther",
+                "trainsNever Trains" = "trainsNever Walk",
+                "trainsSometimes Trains" = "trainsSometimes Trains",
+                "trainsOther Trains" = "trainszOther",
+                "Second City" = "densitySecond City",
+                "Small Town" = "densitySmall Town",
+                "Suburban" = "densitySuburban",
+                "Urban" = "densityUrban",
+                "Density Other" = "densityzOther",
+                "Interact: Income and BIPOC" = "log(income_k):has_BIPOCTRUE",
+                "Constant" = "(Intercept)")
+
+export_summs(model1, model2, model3, coefs = coef_names)
+```

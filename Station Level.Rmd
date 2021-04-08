@@ -1,0 +1,479 @@
+---
+title: "Station Level"
+author: "Carlee Griffeth"
+date: "3/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setting Up
+
+## Loading Libraries
+
+*Note: there may be unecessaary libraries in this list; this has become a running list of libraries I've added to try different functions that I've found online so some may not actually be needed.
+
+```{r load libraries, message=FALSE}
+library(tidyverse)
+library(tidycensus)
+library(purrr)
+library(survey)
+library(srvyr)
+library(knitr)
+library(jtools)
+library(sf)
+library(sp)
+library(units)
+library(nngeo)
+library(leaflet)
+library(tigris)
+library(reshape2)
+library(httr)
+library(jsonlite)
+library(rgdal)
+library(maps)
+library(mapdata)
+library(dplyr)
+library(ggplot2)
+library(cartogram)
+library(ggspatial)
+library(ggthemes)
+library(rnaturalearth)
+library(gtable)
+library(descr)
+library(nnet)
+library(stargazer)
+library(foreign)
+library(haven)
+library(jmv)
+library(gmodels)
+library(nnet)
+library(summarytools)
+library("ggthemes")
+library("mapproj")
+library("ggspatial")
+
+census_api_key("84fd7c10ce8fd8c15d8852fd68abaa8790f1c29d")
+options(tigris_use_cache = TRUE)
+```
+
+# Loading & Cleaning Data
+
+## EVCS Dataset
+
+Manually downaloaded and read into r.
+
+Electric vehicle charging station data is pulled from the US Department of Energy Alternative Fuels Data Center's Alternative Fueling Station Locator at https://afdc.energy.gov/stations/#/analyze?country=US&fuel=ELEC&ev_levels=all&access=public&access=private
+
+Filtered for download by:
+1. Location: United States -- all states/territories
+2. Fuel: Electric -- all charger types, all connectors, all networks selected
+3. Station: 
+    - public and private access; 
+    - status: available; 
+    - owner: all; 
+    - payment: all
+
+```{r loading datasets}
+evcs <- read_csv("Station_Data/evcs.csv") %>%
+                  select(Station_Name, City, StateAbb, Access_Days_Time, Level_one, Level_two,
+                         Level_dc, EV_Network, Latitude, Longitude, Owner_Type_Code, Date_Open, 
+                         EV_Connector, Access_Code, EV_Pricing) %>%
+                  mutate(access_time = case_when(Access_Days_Time == "24 hours daily" ~ "24 hours daily",
+                                            Access_Days_Time == "24 hours" ~ "24 hours daily",
+                                            Access_Days_Time == "MON: 24 hours | TUE: 24 hours | WED: 24 hours | THU: 24 hours | FRI: 24 hours | SAT: 24 hours | SUN: 24 hours" ~ "24 hours daily", 
+                                            Access_Days_Time == "MO: 12:00am-12:00am; TU: 12:00am-12:00am; WE: 12:00am-12:00am; TH: 12:00am-12:00am; FR: 12:00am-12:00am; SA: 12:00am-12:00am; SU: 12:00am-12:00am" ~ "24 hours daily",
+                                            TRUE ~ "Not 24 hours daily")) %>%
+                  mutate(level_one = case_when(Level_one > 0 ~ "TRUE")) %>%
+                  mutate(level_two = case_when(Level_two > 0 ~ "TRUE")) %>%
+                  mutate(level_dc = case_when(Level_dc > 0 ~ "TRUE")) %>%
+                  mutate(ownership = case_when(Owner_Type_Code == "FG" ~ "Federal Government",
+                                               Owner_Type_Code == "J" ~ "Joint",
+                                               Owner_Type_Code == "LG" ~ "Local Government",
+                                               Owner_Type_Code == "P" ~ "aPrivate",
+                                               Owner_Type_Code == "SG" ~ "State Government",
+                                               Owner_Type_Code == "T" ~ "Utility",
+                                               EV_Network == "Electrify America" ~ "Electrify America",
+                                               EV_Network == "ChargePoint Network" ~ "ChargePoint Network",
+                                               TRUE ~ "Other Network",
+                                               FALSE ~ "Other Network")) %>%
+                    mutate(ownershiptwo = case_when(Owner_Type_Code == "FG" ~ "Public",
+                                               Owner_Type_Code == "J" ~ "Other",
+                                               Owner_Type_Code == "LG" ~ "Public",
+                                               Owner_Type_Code == "P" ~ "Private",
+                                               Owner_Type_Code == "SG" ~ "Public",
+                                               Owner_Type_Code == "T" ~ "Public",
+                                               EV_Network == "Electrify America" ~ "Other",
+                                               EV_Network == "ChargePoint Network" ~ "ChargePoint Network",
+                                               TRUE ~ "Other",
+                                               FALSE ~ "Other")) %>%
+                  mutate(access_type = case_when(Access_Code == "public" ~ "Public Accessiblity",
+                                               Access_Code == "private" ~ "Private Accessibility",
+                                               TRUE ~ "Blank",
+                                               FALSE ~ "None")) %>%
+                  mutate(freepay = case_when(EV_Pricing == "Free" ~ "Free",
+                                             EV_Pricing == "FREE" ~ "Free",
+                                             ownership == "ChargePoint Network" ~ "ChargePoint Network",
+                                             TRUE ~ "Pay",
+                                             FALSE ~ "No Info")) %>%
+                  mutate(opendate = case_when(Date_Open <= "43096" ~ "2017 or earlier",
+                                             Date_Open >= "43101" ~ "2018 or later",
+                                             TRUE ~ "No Date")) %>%
+select(Station_Name, City, StateAbb, access_time, level_one, level_two, level_dc, EV_Network, Latitude, Longitude, ownership, ownershiptwo, opendate, EV_Connector, access_type, freepay)
+
+#Creating Dependent Categorical Variable
+evcs <- evcs %>%
+mutate(dependent = case_when(freepay == "Free" & access_type == "Public Accessiblity" & access_time == "24 hours daily" & ownershiptwo == "Public" ~ "Free & Public",
+                             freepay == "Free" & access_type == "Public Accessiblity" & access_time == "24 hours daily" & ownershiptwo == "Private" ~ "aFree & Private",
+                             freepay == "Pay" & ownershiptwo == "Public" ~ "Pay & Public",
+                             freepay == "Pay" & ownershiptwo == "Private" ~ "Pay & Private",
+                             freepay == "ChargePoint Network" ~ "ChargePoint Network",
+                             TRUE ~ "Other"))
+```
+
+## Loading ACS Data
+
+```{r}
+us <- unique(fips_codes$state)[1:51]
+
+us_shape <- map_df(us, function(x) {
+                  tracts(state = x, 
+                            cb = FALSE, 
+                          year = 2017)})
+
+acs_data <- map_df(us, function(x) {
+                  get_acs(geography ="tract",
+                          geometry = TRUE,
+                          variables = c("B01003_001", "B25001_001", "B25003_001", "B25003_002",
+                                        "B25003_003", "B03002_003", "B03002_004", "B03002_005",
+                                        "B03002_006", "B03002_007", "B03002_012", "B08301_001", 
+                                        "B08301_003", "B08301_010", "B08301_021", "B19013_001",
+                                        "B25024_001", "B25024_002", "B25024_003"),
+                          output = "wide",
+                          state = x,
+                          year = 2017)})
+
+# Renaming Columns
+
+colnames(acs_data) <- c("TractID", "NAME", "Tot_Pop", "Tot_Pop_MOE", "Tot_HU", "Tot_HU_MOE", "Tot_HU_Occ", "Tot_HU_Occ_MOE",
+                        "Tot_HU_OwnOcc", "Tot_HU_OwnOcc_MOE", "Tot_HU_RentOcc", "Tot_HU_RentOcc_MOE", "Race_WhiteNH", "Race_WhiteNH_MOE",
+                        "Race_BlackNH", "Race_BlackNH_MOE", "Race_IndigenousNH", "Race_IndigenousNH_MOE", "Race_AsianNH", "Race_AsianNH_MOE", 
+                        "Race_PacIslNH", "Race_PacIslNH_MOE", "Race_Hispanic", "Race_Hispanic_MOE", "Mode_Total", "Mode_Total_MOE", 
+                        "Mode_CarAlone", "Mode_CarAlone_MOE", "Mode_PubTransit", "Mode_PubTransit_MOE", "Mode_WFH", "Mode_WFH_MOE", 
+                        "MedInc", "MedInc_MOE", "Total_Units", "Total_Units_MOE", "Total_Units_Detached", "Total_Units_Detached_MOE", 
+                        "Total_Units_Detached1", "Total_Units_Detached1_MOE", "geometry")
+
+```
+
+## Cleaning ACS Data
+
+```{r}
+acs_data <- acs_data %>%
+  mutate(acs_data, percent_white = (Race_WhiteNH / Tot_Pop)*100) %>%
+  mutate(race = case_when(percent_white < "50" ~ "A Majority BIPOC",
+                                 percent_white <= "75" & percent_white >= "50" ~ "z25-50% BIPOC",
+                                 percent_white > "75" ~ "less than 25% BIPOC",
+                                 TRUE ~ "zOther")) %>%
+  mutate(acs_data, percent_pubtransit = (Mode_PubTransit / Mode_Total)*100) %>%
+  mutate(modeshare = case_when(percent_pubtransit > "50" ~ "A Majority Use Public Transit to Commute",
+                                 percent_pubtransit >= "25" & percent_white <= "50" ~ "z25-50% Use Public Transit to Commute",
+                                 percent_pubtransit < "25" ~ "less than 25% Use Public Transit to Commute",
+                                 TRUE ~ "zOther")) %>%
+  mutate(acs_data, percent_units_wo_garage = (((Tot_HU_OwnOcc * 0.19) + (Tot_HU_RentOcc * 0.61)) / Tot_HU_Occ)*100) %>%
+  mutate(garage = case_when(percent_units_wo_garage > "50" ~ "A Majority no garage or carport",
+                            percent_units_wo_garage < "50" & percent_units_wo_garage > "35" ~ "z35-50% no garage or carport",
+                            percent_units_wo_garage < "35" & percent_units_wo_garage > "25" ~ "z25-35% no garage or carport",
+                            percent_units_wo_garage < "25" & percent_units_wo_garage > "15" ~ "z15-25% no garage or carport",
+                            percent_units_wo_garage < "15" & percent_units_wo_garage > "5" ~ "z5-15% no garage or carport",
+                            percent_units_wo_garage < "15" & percent_units_wo_garage > "1" ~ "z1-5% no garage or carport",
+                            percent_units_wo_garage < "1" ~ "less than 1% no garage or carport",
+                                 TRUE ~ "zOther")) %>%
+  mutate(acs_data, percent_multiunit = ((Total_Units - (Total_Units_Detached + Total_Units_Detached1)) / Total_Units)*100) %>%
+  mutate(density = case_when(percent_multiunit > "90" ~ "over 90% of housing units have 2+ units",
+                            percent_multiunit < "90" & percent_multiunit > "75" ~ "z75-90% of housing units have 2+ units",
+                            percent_multiunit < "75" & percent_multiunit > "50" ~ "z50-75% of housing units have 2+ units",
+                            percent_multiunit < "50" & percent_multiunit > "25" ~ "a25-50% of housing units have 2+ units",
+                            percent_multiunit < "25" & percent_multiunit > "10" ~ "z10-25% of housing units have 2+ units",
+                            percent_multiunit < "1" & percent_multiunit > "10" ~ "z1-10% of housing units have 2+ units",
+                            percent_multiunit < "1" ~ "less than 1% of housing units have 2+ units",
+                                 TRUE ~ "zOther"))
+```
+
+## Density Data
+
+```{r setting up density data}
+density <- read.csv("Tract_data/densities.csv") %>%
+  select(TractID, typeone, typetwo) %>%
+  mutate(density1 = case_when(typeone == "A" ~ "Dense",
+                              typeone == "B" ~ "Diverse",
+                              typeone == "C" ~ "Transient",
+                              typeone == "D" ~ "Established",
+                              typeone == "E" ~ "Accessible")) %>%
+  mutate(density2 = case_when(typetwo == "A" ~ "Rural",
+                              typetwo == "B1" ~ "New Development",
+                              typetwo == "B2" ~ "Patchwork",
+                              typetwo == "B3" ~ "Established Suburb",
+                              typetwo == "C1" ~ "Urban Residential",
+                              typetwo == "C2" ~ "Old Urban",
+                              typetwo == "C3" ~ "Mixed Use")) %>%
+select(TractID, density1, density2)
+```
+
+## Merging Density Variables into ACS Data
+
+```{r}
+tracts <- merge(acs_data, density, by="TractID")
+```
+
+## Merging ACS Variables into EVCS Data
+
+```{r}
+poly_CRS <- st_crs(tracts)
+evcs_points = st_as_sf(evcs, coords = c("Longitude", "Latitude"), crs = poly_CRS)
+  
+evcs_join <- evcs_points %>%
+  st_join(tracts) 
+```
+
+## Loading Political Datatset
+
+```{r political data}
+poli_vars <- read_csv("Station_Data/political_var.csv") %>%
+                  select(states, statename, StateAbb, Gov, StateSen, StateHouse, Leg, Tri_Poli) 
+```
+
+## Merging Political Variables into EVCS Data
+
+```{r}
+evcs_data <- evcs_join %>%
+  left_join(poli_vars)
+
+free_data <- filter(evcs_join, )
+
+write.csv(evcs_data, file = "evcs_data.csv")
+```
+
+# Statistics
+
+# Descriptive Stats
+
+```{r descriptive stats}
+descriptives(evcs_data, vars = vars(percent_white, MedInc, EV_Network, ownership, ownershiptwo, Tri_Poli, percent_pubtransit, density1, density2), freq = TRUE)
+
+CrossTable(evcs_data$ownership, evcs_data$Tri_Pol)
+
+CrossTable(evcs_data$ownership, evcs_data$density1)
+
+CrossTable(evcs_data$ownership, evcs_data$density2)
+
+CrossTable(evcs_data$ownership, evcs_data$freepay)
+
+CrossTable(evcs_data$freepay, evcs_data$Tri_Pol)
+
+CrossTable(evcs_data$freepay, evcs_data$density1)
+
+CrossTable(evcs_data$freepay, evcs_data$density2)
+```
+
+# Regression Models
+
+```{r}
+levels(evcs_data$dependent) <- c("Free & Public","aFree & Private",
+                                 "Pay & Public","Pay & Private",
+                                 "ChargePoint Network", "Other")
+OIM <- multinom(dependent ~ 1, data = (evcs_data))
+summary(OIM)
+```
+
+## Model 1
+
+```{r model 1}
+multi_mo1 <- multinom(dependent ~ MedInc + density2 + Tri_Poli + race + modeshare, data = evcs_data, model=TRUE)
+summary(multi_mo1)
+```
+
+### P-values
+
+```{r model 1 significance ChargePoint Network}
+output <- summary(multi_mo1)
+
+print(output)
+
+z <- output$coefficients/output$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1))*2
+
+Pclass2 <- rbind(output$coefficients[1,],output$standard.errors[1,],z[1,],p[1,])
+rownames(Pclass2) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass2)
+```
+
+```{r model 1 significance Free & Public}
+Pclass3 <- rbind(output$coefficients[2,],output$standard.errors[2,],z[2,],p[2,])
+rownames(Pclass3) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass3)
+```
+
+```{r model 1 significance Other}
+Pclass4 <- rbind(output$coefficients[3,],output$standard.errors[3,],z[3,],p[3,])
+rownames(Pclass4) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass4)
+```
+
+```{r model 1 significance Pay & Private}
+Pclass5 <- rbind(output$coefficients[4,],output$standard.errors[4,],z[4,],p[4,])
+rownames(Pclass5) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass5)
+```
+
+```{r model 1 significance Pay & Public}
+Pclass6 <- rbind(output$coefficients[5,],output$standard.errors[5,],z[5,],p[5,])
+rownames(Pclass6) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass6)
+```
+
+## Model 2
+
+```{r model 2}
+multi_mo2 <- multinom(dependent ~ log(MedInc) + density2 + Tri_Poli + race + modeshare, data = evcs_data, model=TRUE)
+summary(multi_mo2)
+```
+
+## P-values
+
+```{r model 2 significance ChargePoint Network}
+output <- summary(multi_mo2)
+
+print(output)
+
+z <- output$coefficients/output$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1))*2
+
+Pclass2 <- rbind(output$coefficients[1,],output$standard.errors[1,],z[1,],p[1,])
+rownames(Pclass2) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass2)
+```
+
+```{r model 2 significance Free & Public}
+Pclass3 <- rbind(output$coefficients[2,],output$standard.errors[2,],z[2,],p[2,])
+rownames(Pclass3) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass3)
+```
+
+```{r model 2 significance Other}
+Pclass4 <- rbind(output$coefficients[3,],output$standard.errors[3,],z[3,],p[3,])
+rownames(Pclass4) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass4)
+```
+
+```{r model 2 significance Pay & Private}
+Pclass5 <- rbind(output$coefficients[4,],output$standard.errors[4,],z[4,],p[4,])
+rownames(Pclass5) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass5)
+```
+
+```{r model 2 significance Pay & Public}
+Pclass6 <- rbind(output$coefficients[5,],output$standard.errors[5,],z[5,],p[5,])
+rownames(Pclass6) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass6)
+```
+
+```{r model 3}
+multi_mo3 <- multinom(dependent ~ MedInc + density2 + Tri_Poli + race + modeshare + MedInc:race, data = evcs_data, model=TRUE)
+summary(multi_mo3)
+```
+
+## P-values
+
+```{r model 2 significance ChargePoint Network}
+output <- summary(multi_mo3)
+
+print(output)
+
+z <- output$coefficients/output$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1))*2
+
+Pclass2 <- rbind(output$coefficients[1,],output$standard.errors[1,],z[1,],p[1,])
+rownames(Pclass2) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass2)
+```
+```{r model 3 significance Free & Public}
+Pclass3 <- rbind(output$coefficients[2,],output$standard.errors[2,],z[2,],p[2,])
+rownames(Pclass3) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass3)
+```
+
+```{r model 3 significance Other}
+Pclass4 <- rbind(output$coefficients[3,],output$standard.errors[3,],z[3,],p[3,])
+rownames(Pclass4) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass4)
+```
+
+```{r model 2 significance Pay & Private}
+Pclass5 <- rbind(output$coefficients[4,],output$standard.errors[4,],z[4,],p[4,])
+rownames(Pclass5) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass5)
+```
+
+```{r model 2 significance Pay & Public}
+Pclass6 <- rbind(output$coefficients[5,],output$standard.errors[5,],z[5,],p[5,])
+rownames(Pclass6) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass6)
+```
+
+
+
+
+
+
+### CODE DUMP
+
+multi_mo2 <- multinom(dependent ~ log(MedInc) + density2 + Tri_Poli + race + modeshare, data = evcs_data,model=TRUE)
+summary(multi_mo2)
+
+multi_mo3 <- multinom(dependent ~ MedInc + density2 + Tri_Poli + race + modeshare + MedInc:race, data = evcs_data,model=TRUE)
+summary(multi_mo3)
+
+mlogit <- nnet::multinom("dependent ~ log(MedInc) + density2 + Tri_Poli + race + modeshare", data = evcs_data)
+
+output <- summary(mlogit)
+
+print(output)
+
+z <- output$coefficients/output$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1))*2
+
+exp(coef(output))
+
+Pclass2 <- rbind(output$coefficients[1,],output$standard.errors[1,],z[1,],p[1,])
+rownames(Pclass2) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass2)
+
+
+mlogit <- nnet::multinom("dependent ~ MedInc + density2 + Tri_Poli + race + modeshare + MedInc:race", data = evcs_data)
+
+output <- summary(mlogit)
+
+print(output)
+
+
+evcs_data$dependent2 <- relevel(evcs_data$dependent)
+
+multi1 = multinom(dependent ~ MedInc + density1 + Tri_Poli, data = evcs_data)
+summary(multi1)
+
+z <- multi1$coefficients/multi1$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1))*2
+
+Pclass2 <- rbind(multi1$coefficients[1,],multi1$standard.errors[1,],z[1,],p[1,])
+
+rownames(Pclass2) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass2)
+
+z <- output$coefficients/output$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1))*2
+
+Pclass2 <- rbind(output$coefficients[1,],output$standard.errors[1,],z[1,],p[1,])
+rownames(Pclass2) <- c("Coefficient","Std. Errors","z stat","p value")
+knitr::kable(Pclass2)
